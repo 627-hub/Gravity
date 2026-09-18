@@ -51,6 +51,7 @@ export function buildUI(world: World, onStartTour: () => void): () => void {
         <div class="row">
           <button id="pause">⏸ 暂停</button>
           <button id="reset">⟲ J2000</button>
+          <button id="today">⏱ 今天</button>
         </div>
       </div>
 
@@ -144,6 +145,12 @@ export function buildUI(world: World, onStartTour: () => void): () => void {
     world.simDays = 0;
     if (world.state.physics === 'nbody') world.setPhysics('nbody');
   });
+  (app.querySelector('#today') as HTMLButtonElement).addEventListener('click', () => {
+    // Jump the mission clock to the real current date, so scanned launch
+    // windows land in a familiar year.
+    world.simDays = (Date.now() - Date.UTC(2000, 0, 1, 12)) / 86400000;
+    if (world.state.physics === 'nbody') world.setPhysics('nbody');
+  });
 
   // ---- focus selector ----
   const focus = app.querySelector('#focus') as HTMLSelectElement;
@@ -153,11 +160,17 @@ export function buildUI(world: World, onStartTour: () => void): () => void {
     o.textContent = b.name;
     focus.appendChild(o);
   }
+  const craftOpt = document.createElement('option');
+  craftOpt.value = '@craft';
+  craftOpt.textContent = '飞船（跟拍）';
+  focus.appendChild(craftOpt);
   let selected = 'earth';
   focus.value = selected;
   focus.addEventListener('change', () => {
     selected = focus.value;
-    world.focusOn(selected);
+    world.stopFollow(); // a manual focus pick overrides any camera follow
+    if (selected === '@craft') world.followCraft();
+    else world.focusOn(selected);
   });
 
   // Reflect world state into the controls (the tour mutates state directly).

@@ -17,6 +17,14 @@ import { DAY, AU_KM, AU, G, M_SUN } from '../data/constants';
 import { keplerState } from '../physics/state';
 import { keplerPosition, sampleOrbit, orbitalPeriodDays } from '../physics/kepler';
 import { NBody } from '../physics/nbody';
+import { NavViz, CRAFT_ID } from './nav-viz';
+import { Mission as FlightMission } from '../nav/mission';
+import type { TrackingTier } from '../nav/navigator';
+import { toKms } from '../nav/units';
+import { elementsFromState, type ClassicalElements } from '../nav/elements';
+import { makeForceModel, type AccelFn, type GravitySource } from '../nav/perturbations';
+import { solarSystemSources } from '../nav/sources';
+import type { TransferPlan } from '../nav/plan';
 import {
   buildSimBodies, descriptorState, moonElements, moonRelativePosition,
   shortestMoonPeriod, pairMu, type SimDescriptor,
@@ -91,6 +99,109 @@ export interface WorldState {
   vecSun: boolean;             // the Sun's own motion arrow (helix)
 }
 
+/** Everything the navigation console needs, in physics units (AU, AU/day). */
+export interface NavSnapshot {
+  phase: 'docked' | 'cruise' | 'arrived';
+  departureId: string;
+  targetId: string;
+  simDays: number;
+  departureDay: number;
+  arrivalDay: number;
+  tof: number;
+  /** 0..1 along the flight. */
+  progress: number;
+  /** Truth state of the craft (heliocentric ecliptic). */
+  shipAU: Vector3;
+  shipSpeedKms: number;
+  targetAU: Vector3;
+  targetDistKm: number;
+  /** Rate of closure with the target, km/s (positive = approaching). */
+  closingKms: number;
+  /** Trajectories for the mini-map: plan / flown / onboard prediction. */
+  planArc: Vector3[];
+  flown: Vector3[];
+  predicted: Vector3[];
+  status: MissionStatus;
+  /** Attitude: nose held prograde, up = ecliptic north; angles in craft frame. */
+  attitude: {
+    /** Heading (ecliptic longitude of the nose) / elevation, degrees. */
+    yawDeg: number;
+    pitchDeg: number;
+    /** Angular rate the attitude control must track, deg/day. */
+    gyroDegPerDay: number;
+    /** Directions of Sun / target / Earth in the craft frame (polar az/el). */
+    sun: PointingReading;
+    target: PointingReading;
+    earth: PointingReading;
+  };
+  accel: {
+    /**
+     * Modelled gravitational acceleration at the craft, mm/s^2. Null while
+     * parked on a body (or essentially on top of one), where the point-mass
+     * readout diverges and is not meaningful anyway.
+     */
+    gravityMms2: number | null;
+    /** Its direction in the craft frame (null alongside gravityMms2). */
+    gravity: PointingReading | null;
+    /** Onboard accelerometer (non-gravitational), micro-g. */
+    nonGravUg: number;
+  };
+  orbit: ClassicalElements;
+  /** Raw instrument readings from the most recent tracking pass. */
+  measurement: {
+    t: number;
+    rangeKm: number | null;
+    rangeRateKms: number | null;
+    /** Optical bearing to the target, degrees off the nose. */
+    opticalOffDeg: number | null;
+    rangeSigmaKm: number | null;
+    rateSigmaKms: number | null;
+    opticalSigmaArcsec: number | null;
+  } | null;
+}
+
+/** A direction expressed in the craft frame (polar: azimuth off the nose). */
+export interface PointingReading {
+  /** Azimuth: 0 = straight ahead, ±180 = behind. */
+  azDeg: number;
+  /** Elevation above the craft's up axis. */
+  elDeg: number;
+  /** Off-nose angle: 0 = dead ahead. */
+  offDeg: number;
+  /** Position angle in the transverse plane: 0 = craft right, 90 = up. */
+  posDeg: number;
+}
+
+/** Mission snapshot handed to the navigation UI each frame. */
+export interface MissionStatus {
+  departureId: string;
+  targetId: string;
+  phase: 'docked' | 'cruise' | 'arrived';
+  departureDay: number;
+  arrivalDay: number;
+  tof: number;
+  dvDepart: number;
+  dvArrive: number;
+  dvTotal: number;
+  daysToDeparture: number;
+  daysToArrival: number;
+  /** True separation from the rendezvous point at arrival, km. */
+  missKm: number;
+  /** Separation the onboard navigation expects at arrival, km. */
+  estMissKm: number;
+  /** Delta-v needed by a correction burn right now, km/s (cruise only). */
+  tcmDvKms: number | null;
+  tcmCount: number;
+  tcmUsedKms: number;
+  /** L1 readout: null when flying without tracking (truth navigation). */
+  trackingLabel: string | null;
+  trackCount: number;
+  /** Onboard estimate error vs truth (god's-eye comparison), km. */
+  estErrorKm: number;
+  /** Onboard position uncertainty (1-sigma), km. */
+  posSigmaKm: number;
+}
+
 export class World {
   readonly scene = new Scene();
   readonly camera: PerspectiveCamera;
@@ -138,10 +249,21 @@ export class World {
   private followCamPos = new Vector3();
   private followLast = new Vector3();   // followed body's previous scene pos
   private followHasLast = false;
+  /** User has zoomed/orbited while following: keep their pose, translate only. */
+  private followUserAdjusted = false;
   private followDelta = new Vector3();
 
   /** When non-null, only bodies whose id is present are shown (tour mode). */
   visible: Set<string> | null = null;
+
+  // Navigation mission: a planned transfer flown by the spacecraft.
+  private navViz!: NavViz;
+  private mission: FlightMission | null = null;
+  private missionPhase: 'docked' | 'cruise' | 'arrived' = 'docked';
+  private missionTrackingLabel: string | null = null;
+  /** Cached force model + sources for the console's gravity readout. */
+  private navForceModel: AccelFn | null = null;
+  private navSources: GravitySource[] | null = null;
 
   simDays = 0;
   energy0 = 0;
@@ -324,7 +446,15 @@ export class World {
 
     // Drag to rotate: suspend auto-framing while dragging; on release, ease
     // back to the slide's framing (during the tour) or stay put (free explore).
-    this.controls.addEventListener('start', () => { this.userDragging = true; });
+    this.controls.addEventListener('start', () => {
+      this.userDragging = true;
+      // Free explore + following: keep the pose the user is creating.
+      if (this.followId && !this.returnOnRelease) this.followUserAdjusted = true;
+    });
+    // Wheel-zoom while following must not be undone by the follow framing.
+    cv.addEventListener('wheel', () => {
+      if (this.followId) this.followUserAdjusted = true;
+    }, { passive: true });
     this.controls.addEventListener('end', () => {
       this.userDragging = false;
       if (this.returnOnRelease && !this.followId && this.homeCamPos) {
@@ -347,6 +477,7 @@ export class World {
     this.buildSpacetime();
     this.buildPrecession();
     this.buildNBody();
+    this.navViz = new NavViz(this.scene);
     this.resize();
     window.addEventListener('resize', () => this.resize());
   }
@@ -1557,10 +1688,267 @@ export class World {
     }
     this.followId = id;
     this.followHasLast = false;
+    this.followUserAdjusted = false; // a fresh follow re-applies its framing
     this.homeCamPos = null; // home is the (dynamic) follow pose
   }
 
-  stopFollow(): void { this.followId = null; }
+  stopFollow(): void {
+    this.followId = null;
+    this.followUserAdjusted = false;
+  }
+
+  // ---- navigation mission ---------------------------------------------
+
+  /**
+   * Start flying a planned transfer. The craft waits docked at the departure
+   * body until the departure epoch, cruises along the Lambert arc, then rides
+   * with the target body after arrival. With `injectError` a small launch
+   * dispersion is added so the flight drifts off the plan — the setup for
+   * trajectory correction manoeuvres.
+   */
+  launchMission(
+    plan: TransferPlan,
+    opts: { injectError?: boolean; tracking?: TrackingTier | null } = {},
+  ): void {
+    this.setDemo('normal');
+    const mission = new FlightMission(plan, {
+      injectError: opts.injectError ?? true,
+      tracking: opts.tracking ?? null,
+    });
+    this.missionTrackingLabel = opts.tracking?.label ?? null;
+    this.mission = mission;
+    this.missionPhase = this.simDays < plan.departureDay ? 'docked' : 'cruise';
+    const f = 1 - this.flatten;
+    this.navViz.setPlanArc(mission.planArcPath, plan.r1, plan.r2, this.scale, f);
+    this.navViz.setPredicted(mission.predictedPath(), this.scale, f);
+    const name = ALL_BODIES.find((b) => b.id === plan.targetId)?.name ?? plan.targetId;
+    this.navViz.setLabel(`飞船 → ${name}`);
+    this.updateMission();
+  }
+
+  /** Remove the spacecraft and its trajectory. */
+  clearMission(): void {
+    this.mission = null;
+    this.navViz.clear();
+    if (this.followId === CRAFT_ID) this.followId = null;
+  }
+
+  /**
+   * Execute a trajectory correction manoeuvre right now: re-solve Lambert from
+   * the craft's actual state to the rendezvous point and fly the new arc.
+   * Returns the applied delta-v in km/s, or null when unavailable.
+   */
+  applyTcm(): number | null {
+    const m = this.mission;
+    if (!m || this.missionPhase !== 'cruise') return null;
+    const dvKms = m.applyTcm(this.simDays);
+    if (dvKms === null) return null;
+    this.navViz.setPredicted(m.predictedPath(), this.scale, 1 - this.flatten);
+    this.updateMission();
+    return dvKms;
+  }
+
+  /** Snapshot for the dedicated navigation console (null without a mission). */
+  navSnapshot(): NavSnapshot | null {
+    const m = this.mission;
+    if (!m) return null;
+    const status = this.missionStatus();
+    if (!status) return null;
+    const p = m.plan;
+    const t = this.simDays;
+    const findView = (id: string) => this.views.find((v) => v.body.id === id);
+    const bodyVel = (id: string): Vector3 => {
+      const b = ALL_BODIES.find((x) => x.id === id);
+      return b?.orbit ? keplerState(b.orbit, t).vel : new Vector3();
+    };
+
+    const targetAU = findView(p.targetId)?.curAU.clone() ?? p.r2.clone();
+    let shipAU: Vector3;
+    let shipVel: Vector3;
+    if (t < p.departureDay || t >= p.arrivalDay) {
+      const id = t < p.departureDay ? p.departureId : p.targetId;
+      shipAU = findView(id)?.curAU.clone() ?? p.r1.clone();
+      shipVel = bodyVel(id);
+    } else {
+      const st = m.stateAt(t);
+      shipAU = st.pos;
+      shipVel = st.vel;
+    }
+
+    const rel = new Vector3().subVectors(targetAU, shipAU);
+    const dist = rel.length();
+    const closing = dist > 0
+      ? rel.dot(new Vector3().subVectors(shipVel, bodyVel(p.targetId))) / dist
+      : 0;
+
+    // --- attitude: nose held prograde, "up" is the ecliptic-north component.
+    const forward = shipVel.clone().normalize();
+    const north = new Vector3(0, 0, 1);
+    const up = new Vector3().copy(north).addScaledVector(forward, -north.dot(forward));
+    if (up.lengthSq() < 1e-8) up.set(1, 0, 0).addScaledVector(forward, -forward.x);
+    up.normalize();
+    const right = new Vector3().crossVectors(up, forward).normalize();
+
+    const toCraft = (dir: Vector3): PointingReading => {
+      const d = dir.clone().normalize();
+      const fwd = Math.max(-1, Math.min(1, d.dot(forward)));
+      return {
+        azDeg: (Math.atan2(d.dot(right), fwd) * 180) / Math.PI,
+        elDeg: (Math.asin(Math.max(-1, Math.min(1, d.dot(up)))) * 180) / Math.PI,
+        offDeg: (Math.acos(fwd) * 180) / Math.PI,
+        posDeg: (Math.atan2(d.dot(up), d.dot(right)) * 180) / Math.PI,
+      };
+    };
+
+    const sunDir = shipAU.clone().multiplyScalar(-1).normalize();
+    const earthAU = findView('earth')?.curAU.clone() ?? new Vector3(1, 0, 0);
+    const sun = toCraft(sunDir);
+    const target = toCraft(new Vector3().subVectors(targetAU, shipAU));
+    const earth = toCraft(new Vector3().subVectors(earthAU, shipAU));
+
+    // --- accelerations: modelled gravity (what shapes the orbit) and the
+    // accelerometer reading (non-gravitational; coasting here, so noise only).
+    // Parked on a body (or within ~15,000 km of one) the point-mass model is
+    // singular, so the readout blanks instead of diverging.
+    if (!this.navForceModel || !this.navSources) {
+      this.navSources = solarSystemSources();
+      this.navForceModel = makeForceModel(this.navSources);
+    }
+    let nearestBody = Infinity;
+    for (const src of this.navSources) {
+      const d = src.positionAt(t).distanceTo(shipAU);
+      if (d < nearestBody) nearestBody = d;
+    }
+    const accelOk = this.missionPhase === 'cruise' && nearestBody > 1e-4;
+
+    const g = accelOk ? this.navForceModel(t, shipAU, new Vector3()) : null;
+    const gravityMms2 =
+      g && Number.isFinite(g.length()) && g.length() < 1
+        ? ((g.length() * AU) / (DAY * DAY)) * 1000
+        : null;
+    const gravity = g && gravityMms2 !== null ? toCraft(g) : null;
+    const nonGravUg = Math.abs(Math.sin(t * 12.9898 + 4.1414)) * 0.2;
+
+    const orbit = elementsFromState({ pos: shipAU, vel: shipVel });
+    const gyroDegPerDay =
+      g && gravityMms2 !== null && shipVel.lengthSq() > 0
+        ? (new Vector3().crossVectors(shipVel, g).length() / shipVel.lengthSq()) * (180 / Math.PI)
+        : 0;
+
+    const raw = m.lastMeasurement();
+    const tn = m.trackingNoise();
+    const measurement = raw.range
+      ? {
+          t: raw.range.t,
+          rangeKm: (raw.range.range * AU) / 1000,
+          rangeRateKms: toKms(raw.range.rangeRate),
+          opticalOffDeg: raw.optical ? toCraft(raw.optical.dir).offDeg : null,
+          rangeSigmaKm: tn ? (tn.rangeSigma * AU) / 1000 : null,
+          rateSigmaKms: tn ? toKms(tn.rangeRateSigma) : null,
+          opticalSigmaArcsec: tn ? (tn.opticalSigma * 180 * 3600) / Math.PI : null,
+        }
+      : null;
+
+    return {
+      phase: this.missionPhase,
+      departureId: p.departureId,
+      targetId: p.targetId,
+      simDays: t,
+      departureDay: p.departureDay,
+      arrivalDay: p.arrivalDay,
+      tof: p.tof,
+      progress: Math.min(1, Math.max(0, (t - p.departureDay) / p.tof)),
+      shipAU,
+      shipSpeedKms: toKms(shipVel.length()),
+      targetAU,
+      targetDistKm: (dist * AU) / 1000,
+      closingKms: toKms(closing),
+      planArc: m.planArcPath,
+      flown: m.flown,
+      predicted: m.predictedPath(),
+      status,
+      attitude: {
+        yawDeg: (Math.atan2(forward.y, forward.x) * 180) / Math.PI,
+        pitchDeg: (Math.asin(Math.max(-1, Math.min(1, forward.z))) * 180) / Math.PI,
+        gyroDegPerDay,
+        sun,
+        target,
+        earth,
+      },
+      accel: { gravityMms2, gravity, nonGravUg },
+      orbit,
+      measurement,
+    };
+  }
+
+  /** Keep the camera on the spacecraft (uses the generic follow machinery). */
+  followCraft(): void {
+    if (this.mission) this.followBody(CRAFT_ID, 14, 0.3);
+  }
+
+  /** Snapshot of the mission for the UI, or null when there is no mission. */
+  missionStatus(): MissionStatus | null {
+    if (!this.mission) return null;
+    const m = this.mission;
+    const p = m.plan;
+    const sol = this.missionPhase === 'cruise' ? m.solveTcm(this.simDays) : null;
+    return {
+      departureId: p.departureId,
+      targetId: p.targetId,
+      phase: this.missionPhase,
+      departureDay: p.departureDay,
+      arrivalDay: p.arrivalDay,
+      tof: p.tof,
+      dvDepart: p.dvDepart,
+      dvArrive: p.dvArrive,
+      dvTotal: p.dvTotal,
+      daysToDeparture: p.departureDay - this.simDays,
+      daysToArrival: p.arrivalDay - this.simDays,
+      missKm: (m.truthMissDistance() * AU) / 1000,
+      estMissKm: (m.estimatedMissDistance(this.simDays) * AU) / 1000,
+      tcmDvKms: sol ? sol.dvKms : null,
+      tcmCount: m.tcmCount,
+      tcmUsedKms: m.tcmUsedKms,
+      trackingLabel: this.missionTrackingLabel,
+      trackCount: m.trackingCount,
+      estErrorKm: m.hasTracking ? (m.estimateError(this.simDays) * AU) / 1000 : 0,
+      posSigmaKm: m.hasTracking ? (m.positionSigma() * AU) / 1000 : 0,
+    };
+  }
+
+  /** Per-frame mission update: dock → cruise → arrived, with TCM support. */
+  private updateMission(): void {
+    const m = this.mission;
+    if (!m) return;
+    const p = m.plan;
+    const f = 1 - this.flatten;
+    const t = this.simDays;
+
+    if (t < p.departureDay) {
+      this.missionPhase = 'docked';
+      const dv = this.views.find((v) => v.body.id === p.departureId);
+      this.navViz.updateCraft(dv ? dv.curAU : p.r1, null, this.scale, f);
+      const r = dv ? this.scale.bodyRadius(dv.body.radius, false) : 0.4;
+      this.navViz.setCraftHover(r + 0.55);
+      this.navViz.setFlown([], this.scale, f);
+      this.navViz.setPredicted(null, this.scale, f);
+    } else if (t < p.arrivalDay) {
+      this.missionPhase = 'cruise';
+      m.updateFlown(t);
+      const st = m.stateAt(t);
+      this.navViz.updateCraft(st.pos, st.vel, this.scale, f);
+      this.navViz.setFlown(m.flown, this.scale, f);
+      this.navViz.setPredicted(m.predictedPath(), this.scale, f);
+    } else {
+      this.missionPhase = 'arrived';
+      m.updateFlown(p.arrivalDay);
+      const tv = this.views.find((v) => v.body.id === p.targetId);
+      this.navViz.updateCraft(tv ? tv.curAU : p.r2, null, this.scale, f);
+      const r = tv ? this.scale.bodyRadius(tv.body.radius, false) : 0.4;
+      this.navViz.setCraftHover(r + 0.55);
+      this.navViz.setFlown(m.flown, this.scale, f);
+    }
+  }
 
   /**
    * The body's intended scene position for the CURRENT step's state (physics +
@@ -1656,6 +2044,7 @@ export class World {
       }
       attr.needsUpdate = true;
     }
+    if (this.navViz) this.navViz.project(this.scale, f);
   }
 
   private isVisible(id: string): boolean {
@@ -2018,23 +2407,39 @@ export class World {
     this.updateRocket();
     this.updateBoom(dtReal);
     this.updateAstro(dtReal);
+    this.updateMission();
 
-    // Following a moving body (the body's curScene is set above this frame).
+    // Following a moving body — or the spacecraft. The followed scene position
+    // is already fresh from this frame's updates above.
     if (this.followId) {
-      const fv = this.views.find((v) => v.body.id === this.followId);
-      if (fv) {
-        if (!this.followHasLast) { this.followLast.copy(fv.curScene); this.followHasLast = true; }
-        if (this.userDragging) {
-          // While rotating, rigidly translate the camera AND its pivot by the
-          // body's motion, so the body stays dead-center under the user's orbit.
-          this.followDelta.copy(fv.curScene).sub(this.followLast);
+      let followScene: Vector3 | null = null;
+      if (this.followId === CRAFT_ID) {
+        if (this.mission) followScene = this.navViz.craftScene;
+      } else {
+        const fv = this.views.find((v) => v.body.id === this.followId);
+        if (fv) followScene = fv.curScene;
+      }
+      if (followScene) {
+        // 2D ecliptic view: hold the camera straight overhead so the flattened
+        // scene reads as a clean plane (a tilted follow pose would skew it).
+        if (this.state.twoD > 0.5) {
+          const dist = this.followCamOffset.length() || 14;
+          this.followCamOffset.set(0, Math.max(dist, 8), 0.001);
+          this.followTgtOffset.set(0, 0, 0);
+        }
+        if (!this.followHasLast) { this.followLast.copy(followScene); this.followHasLast = true; }
+        if (this.userDragging || this.followUserAdjusted) {
+          // Rigid translation: carry the camera AND its pivot with the target,
+          // so the user's own zoom/orbit pose is preserved while following.
+          this.followDelta.copy(followScene).sub(this.followLast);
           this.camera.position.add(this.followDelta);
           this.controls.target.add(this.followDelta);
+          this.camPosGoal = null;
         } else {
-          this.camPosGoal = this.followCamPos.copy(fv.curScene).add(this.followCamOffset);
-          this.camTargetGoal.copy(fv.curScene).add(this.followTgtOffset);
+          this.camPosGoal = this.followCamPos.copy(followScene).add(this.followCamOffset);
+          this.camTargetGoal.copy(followScene).add(this.followTgtOffset);
         }
-        this.followLast.copy(fv.curScene);
+        this.followLast.copy(followScene);
       }
     }
 

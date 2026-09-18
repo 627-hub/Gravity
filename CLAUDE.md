@@ -15,6 +15,7 @@ data; only the *scale* is faked (and that's a user toggle).
 ```bash
 npm install
 npm run dev      # vite dev server (http://localhost:5173)
+npm test         # vitest unit tests (src/nav navigation algorithms)
 npm run build    # tsc --noEmit-style type-check + vite production build → dist/
 npm run preview  # serve the production build locally
 ```
@@ -33,13 +34,29 @@ name if it ever changes.
 src/
   data/        physical constants, real planet/moon data (radii, masses, J2000 elements)
   physics/     kepler.ts (analytic two-body), state.ts (state vectors), nbody.ts (leapfrog)
+  nav/         navigation core (AU / AU-per-day, matching physics/):
+               units.ts (km/s conversions), propagate.ts (universal-variable two-body),
+               lambert.ts (Izzo solver), maneuvers.ts (Hohmann, bi-elliptic, dV budgets),
+               ephemeris.ts (body-state adapters), windows.ts (porkchop scans),
+               perturbations.ts (multi-body force model + SRP), sources.ts (solar-system
+               gravity sources, SOI radii), integrate.ts (adaptive DOPRI5),
+               analysis.ts (closest approach, impact events),
+               flyby.ts (B-plane gravity assists), targeting.ts (shoot a flyby to hit a target),
+               plan.ts (bestTransfer: cheapest window on a rolling horizon),
+               mission.ts (flown mission: dispersion, TCM re-solves, flown path),
+               navigator.ts (L1 tracking: range/range-rate + optical EKF, noise tiers),
+               elements.ts (state → classical orbital elements)
   scene/
     scale.ts     real vs visual scale models
     textures.ts  procedural canvas surface textures (offline; Earth uses a real image)
     world.ts     the Three.js engine — scene, bodies, orbits, vectors, and every demo
+    nav-viz.ts   spacecraft model + transfer arc rendering (NavViz, CRAFT_ID)
   ui/
     panel.ts     free-explore control panel
     tour.ts      the guided walkthrough: STEPS data + the Tour controller + i18n (EN/PL)
+    nav-panel.ts mission controls (pick from/to, scan, launch, tracking tier, TCM);
+    nav-console.ts flight-deck console: attitude/pointing indicator (ADI), instrument
+                 readouts (accelerometer, ranging, optical nav), orbit + mini-map
   main.ts        wiring + animation loop
 public/          static assets served at root (e.g. earth_daymap.jpg)
 ```
