@@ -23,6 +23,7 @@ import type { TrackingTier } from '../nav/navigator';
 import { toKms } from '../nav/units';
 import { elementsFromState, type ClassicalElements } from '../nav/elements';
 import { makeForceModel, type AccelFn, type GravitySource } from '../nav/perturbations';
+import { Adcs, DEFAULT_ADCS } from '../nav/attitude';
 import { solarSystemSources } from '../nav/sources';
 import type { TransferPlan } from '../nav/plan';
 import {
@@ -122,6 +123,15 @@ export interface NavSnapshot {
   flown: Vector3[];
   predicted: Vector3[];
   status: MissionStatus;
+  /** ADCS readouts (null before the cruise starts). */
+  adcs: {
+    pointingArcsec: number;
+    estimateArcsec: number;
+    rateDegS: number;
+    starUpdates: number;
+    starSigmaArcsec: number;
+    gyroArwDegSqrtH: number;
+  } | null;
   /** Attitude: nose held prograde, up = ecliptic north; angles in craft frame. */
   attitude: {
     /** Heading (ecliptic longitude of the nose) / elevation, degrees. */
@@ -264,6 +274,10 @@ export class World {
   /** Cached force model + sources for the console's gravity readout. */
   private navForceModel: AccelFn | null = null;
   private navSources: GravitySource[] | null = null;
+  /** ADCS: attitude dynamics + gyro/star-tracker navigation. */
+  private adcs: Adcs | null = null;
+  private adcsDay = 0;
+  private adcsPointingArcsec = 0;
 
   simDays = 0;
   energy0 = 0;
@@ -1721,6 +1735,7 @@ export class World {
     const f = 1 - this.flatten;
     this.navViz.setPlanArc(mission.planArcPath, plan.r1, plan.r2, this.scale, f);
     this.navViz.setPredicted(mission.predictedPath(), this.scale, f);
+    this.adcs = null; // created when the cruise starts
     const name = ALL_BODIES.find((b) => b.id === plan.targetId)?.name ?? plan.targetId;
     this.navViz.setLabel(`飞船 → ${name}`);
     this.updateMission();
@@ -1867,6 +1882,16 @@ export class World {
       flown: m.flown,
       predicted: m.predictedPath(),
       status,
+      adcs: this.adcs
+        ? {
+            pointingArcsec: this.adcsPointingArcsec,
+            estimateArcsec: this.adcs.estimateErrorArcsec(),
+            rateDegS: this.adcs.rateDegPerSec(),
+            starUpdates: this.adcs.starUpdates,
+            starSigmaArcsec: DEFAULT_ADCS.starSigmaArcsec,
+            gyroArwDegSqrtH: DEFAULT_ADCS.gyroArwDegSqrtH,
+          }
+        : null,
       attitude: {
         yawDeg: (Math.atan2(forward.y, forward.x) * 180) / Math.PI,
         pitchDeg: (Math.asin(Math.max(-1, Math.min(1, forward.z))) * 180) / Math.PI,
@@ -1936,6 +1961,23 @@ export class World {
       this.missionPhase = 'cruise';
       m.updateFlown(t);
       const st = m.stateAt(t);
+      // ADCS: hold the nose prograde with a PD loop; gyro + star tracker keep
+      // the onboard attitude estimate (the flight-deck readouts).
+      const north = new Vector3(0, 0, 1);
+      const fwd = st.vel.clone().normalize();
+      const upCmd = north.clone().addScaledVector(fwd, -north.dot(fwd));
+      if (upCmd.lengthSq() < 1e-8) upCmd.set(0, 1, 0).addScaledVector(fwd, -fwd.y);
+      upCmd.normalize();
+      if (!this.adcs) {
+        this.adcs = new Adcs(fwd, upCmd, t);
+        this.adcsDay = t;
+      }
+      const dtAtt = t - this.adcsDay;
+      if (dtAtt > 0) {
+        this.adcs.advance(dtAtt, fwd, upCmd);
+        this.adcsDay = t;
+      }
+      this.adcsPointingArcsec = this.adcs.pointingErrorDeg(fwd) * 3600;
       this.navViz.updateCraft(st.pos, st.vel, this.scale, f);
       this.navViz.setFlown(m.flown, this.scale, f);
       this.navViz.setPredicted(m.predictedPath(), this.scale, f);

@@ -44,7 +44,9 @@ src/
                flyby.ts (B-plane gravity assists), targeting.ts (shoot a flyby to hit a target),
                plan.ts (bestTransfer: cheapest window on a rolling horizon),
                mission.ts (flown mission: dispersion, TCM re-solves, flown path),
-               navigator.ts (L1 tracking: range/range-rate + optical EKF, noise tiers),
+               navigator.ts (L1 tracking: square-root EKF on range/range-rate + optical),
+               truth.ts (n-body truth trajectory: full force field + SRP, Hermite sampling),
+               attitude.ts (ADCS: PD pointing, gyro ARW + star tracker, quaternion math),
                elements.ts (state → classical orbital elements)
   scene/
     scale.ts     real vs visual scale models

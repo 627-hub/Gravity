@@ -156,21 +156,36 @@ export interface NavigatorInit {
   posSigma0: number;
   /** 1-sigma a-priori velocity uncertainty, AU/day. */
   velSigma0: number;
-  /** Process-noise acceleration spectral density, AU/day^2. */
+  /**
+   * Process-noise acceleration spectral density, AU/day^2. Represents the
+   * unmodelled part of the dynamics (third-body pulls, SRP, ...): with an
+   * n-body truth and a two-body onboard model this is real model error, and
+   * it is what keeps the filter honest over long coasts.
+   */
   accelNoise?: number;
 }
 
 const N = 6;
-/** Numerical floors: (1.5 km)^2 and (0.02 mm/s)^2, in AU units. */
-const POS_VARIANCE_FLOOR = 1e-16;
-const VEL_VARIANCE_FLOOR = 1e-20;
+/** Factor floor: keeps the covariance bounded below (~1.5 km / 0.02 mm/s). */
+const L_FLOOR = 1e-8;
 
-/** Sequential EKF over [x, y, z, vx, vy, vz] with a diagonal covariance. */
+/**
+ * Sequential EKF over [x, y, z, vx, vy, vz] in SQUARE-ROOT form: the
+ * covariance is carried as P = L L^T (lower-triangular Cholesky factor) and
+ * never formed explicitly.
+ *
+ * Why: a dense covariance collapses to numerical rank deficiency under precise
+ * measurements, and measurement directions aligned with the resulting null
+ * space divide roundoff by roundoff (gains ~1e7) and destroy the filter. In
+ * factored form the propagation is a QR re-triangularisation of [Phi L | Lq]
+ * and the measurement update is a rank-1 Cholesky downdate — both are
+ * positive-definite by construction, so the failure mode cannot occur.
+ */
 export class Navigator {
   measurementCount = 0;
 
   private x = new Float64Array(N);
-  private p = new Float64Array(N); // per-axis variances
+  private L = new Float64Array(N * N);
   private noise: TrackingNoise;
   private accelNoise: number;
   private t: number;
@@ -182,10 +197,11 @@ export class Navigator {
     this.x[3] = initial.vel.x;
     this.x[4] = initial.vel.y;
     this.x[5] = initial.vel.z;
-    for (let i = 0; i < 3; i++) this.p[i] = init.posSigma0 * init.posSigma0;
-    for (let i = 3; i < N; i++) this.p[i] = init.velSigma0 * init.velSigma0;
+    for (let i = 0; i < N; i++) {
+      this.L[i * N + i] = i < 3 ? init.posSigma0 : init.velSigma0;
+    }
     this.noise = init.noise;
-    this.accelNoise = init.accelNoise ?? 3e-8;
+    this.accelNoise = init.accelNoise ?? 1e-8;
     this.t = t0;
   }
 
@@ -202,31 +218,83 @@ export class Navigator {
     return this.t;
   }
 
-  /** Total position uncertainty (1-sigma, AU): sqrt of the summed variances. */
+  private positionVariance(): number {
+    let v = 0;
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j <= i; j++) v += this.L[i * N + j] ** 2;
+    }
+    return v;
+  }
+
+  private velocityVariance(): number {
+    let v = 0;
+    for (let i = 3; i < N; i++) {
+      for (let j = 0; j <= i; j++) v += this.L[i * N + j] ** 2;
+    }
+    return v;
+  }
+
+  /** Total position uncertainty (1-sigma, AU). */
   positionSigma(): number {
-    return Math.sqrt(this.p[0] + this.p[1] + this.p[2]);
+    return Math.sqrt(this.positionVariance());
   }
 
   velocitySigma(): number {
-    return Math.sqrt(this.p[3] + this.p[4] + this.p[5]);
+    return Math.sqrt(this.velocityVariance());
   }
 
-  /** Propagate the estimate and its (conservative) covariance to `t`. */
+  /** Propagate the estimate and its covariance factor to `t`. */
   propagateTo(t: number): void {
     const dt = t - this.t;
     if (dt <= 0) return;
     const next = propagate(this.state(), dt, MU_SUN);
-    const qPos = 0.5 * this.accelNoise * dt * dt;
-    const qVel = this.accelNoise * dt;
-    for (let i = 0; i < 3; i++) {
-      const posVar = this.p[i];
-      const velVar = this.p[i + 3];
-      // Assume a +0.5 position-velocity correlation: slightly pessimistic
-      // (never overconfident) yet tight enough to stay useful.
-      this.p[i] =
-        posVar + Math.sqrt(posVar * velVar) * dt + velVar * dt * dt + qPos * qPos;
-      this.p[i + 3] = velVar + qVel * qVel;
+
+    // State transition matrix via central differences (smooth flow over days).
+    const Phi = new Float64Array(N * N);
+    const epsPos = 1e-8; // AU
+    const epsVel = 1e-10; // AU/day
+    for (let i = 0; i < N; i++) {
+      const eps = i < 3 ? epsPos : epsVel;
+      const xp = this.x.slice();
+      const xm = this.x.slice();
+      xp[i] += eps;
+      xm[i] -= eps;
+      const fp = propagate(arrayState(xp), dt, MU_SUN);
+      const fm = propagate(arrayState(xm), dt, MU_SUN);
+      const fpArr = [fp.pos.x, fp.pos.y, fp.pos.z, fp.vel.x, fp.vel.y, fp.vel.z];
+      const fmArr = [fm.pos.x, fm.pos.y, fm.pos.z, fm.vel.x, fm.vel.y, fm.vel.z];
+      for (let r = 0; r < N; r++) Phi[r * N + i] = (fpArr[r] - fmArr[r]) / (2 * eps);
     }
+
+    // Square-root propagation: P+ = Phi P Phi^T + Q. Stack B = [Phi L ; Lq]
+    // (2N x N) and re-triangularise: B^T B = R^T R, so L+ = R^T.
+    const half = 0.5 * this.accelNoise * dt * dt;
+    const qPos = Math.sqrt(half * half);
+    const qVel = Math.sqrt((this.accelNoise * dt) ** 2);
+    const B = new Float64Array(2 * N * N);
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < N; j++) {
+        // B row i = column i of (Phi L), so that B^T B = (Phi L)(Phi L)^T.
+        let acc = 0;
+        for (let k = i; k < N; k++) acc += Phi[j * N + k] * this.L[k * N + i];
+        B[i * N + j] = acc;
+      }
+    }
+    for (let i = 0; i < N; i++) B[(N + i) * N + i] = i < 3 ? qPos : qVel;
+    const R = householderR(B, 2 * N, N);
+    // Householder QR leaves arbitrary row signs; normalise them so L = R^T is
+    // a proper Cholesky factor (P = R^T R is invariant under row sign flips).
+    for (let i = 0; i < N; i++) {
+      if (R[i * N + i] < 0) {
+        for (let j = i; j < N; j++) R[i * N + j] = -R[i * N + j];
+      }
+    }
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < N; j++) {
+        this.L[i * N + j] = i >= j ? R[j * N + i] : 0; // L = R^T (lower)
+      }
+    }
+
     this.x[0] = next.pos.x;
     this.x[1] = next.pos.y;
     this.x[2] = next.pos.z;
@@ -252,7 +320,7 @@ export class Navigator {
     const range = d.length();
     if (!(range > 1e-6)) return;
     const h = [d.x / range, d.y / range, d.z / range, 0, 0, 0];
-    this.scalarUpdate(h, zRange - range, this.noise.rangeSigma * this.noise.rangeSigma);
+    this.scalarUpdate(h, zRange - range, this.noise.rangeSigma ** 2);
   }
 
   private rangeRateUpdate(zRate: number, station: StateVector): void {
@@ -272,14 +340,13 @@ export class Navigator {
     const dHat = d.divideScalar(range).clone();
     const drr = new Vector3().copy(dv).addScaledVector(dHat, -rangeRate).divideScalar(range);
     const h = [drr.x, drr.y, drr.z, dHat.x, dHat.y, dHat.z];
-    this.scalarUpdate(h, zRate - rangeRate, this.noise.rangeRateSigma * this.noise.rangeRateSigma);
+    this.scalarUpdate(h, zRate - rangeRate, this.noise.rangeRateSigma ** 2);
   }
 
   /**
-   * Fold an onboard optical bearing (craft → beacon) into the estimate: two
-   * transverse angles, each with 1-sigma `opticalSigma`. Range+Doppler from a
-   * ground station leaves the cross-track state poorly observable; the camera
-   * fixes it (classic optical navigation).
+   * Onboard optical bearing (craft -> beacon): two transverse angles, each
+   * with 1-sigma `opticalSigma`. Range+Doppler from a ground station leaves
+   * the cross-track state poorly observable; the camera fixes it.
    */
   opticalUpdate(z: OpticalMeasurement, beacon: StateVector): void {
     const d = new Vector3(
@@ -293,25 +360,68 @@ export class Navigator {
     const [e1, e2] = transverseBasis(d);
     const residues = [z.dir.dot(e1), z.dir.dot(e2)];
     const predicted = [d.dot(e1), d.dot(e2)];
-    const r = this.noise.opticalSigma * this.noise.opticalSigma;
+    const r = this.noise.opticalSigma ** 2;
     for (let k = 0; k < 2; k++) {
       const e = k === 0 ? e1 : e2;
-      // d(direction)/d(craft position) = -(I - dd^T)/range
       const h = [-e.x / range, -e.y / range, -e.z / range, 0, 0, 0];
       this.scalarUpdate(h, residues[k] - predicted[k], r);
     }
   }
 
-  /** One scalar update of the diagonal filter. */
+  /**
+   * One scalar update in factored form. The gain comes from Ph = P h computed
+   * through the factor; the covariance becomes the Joseph form
+   *   P+ = (I - K h^T) P (I - K h^T)^T + K r K^T,
+   * which is stacked as B = [M L | sqrt(r) K] and re-triangularised by QR.
+   * Positive definite by construction — no explicit downdate.
+   */
   private scalarUpdate(h: number[], innovation: number, r: number): void {
-    let s = r;
-    for (let i = 0; i < N; i++) s += h[i] * h[i] * this.p[i];
-    if (!(s > 0) || !Number.isFinite(s)) return;
+    const tv = new Float64Array(N);
+    for (let i = N - 1; i >= 0; i--) {
+      let acc = 0;
+      for (let j = i; j < N; j++) acc += this.L[j * N + i] * h[j];
+      tv[i] = acc;
+    }
+    const ph = new Float64Array(N);
     for (let i = 0; i < N; i++) {
-      const k = (this.p[i] * h[i]) / s;
-      this.x[i] += k * innovation;
-      const pNew = this.p[i] * (1 - k * h[i]);
-      this.p[i] = Math.max(pNew, i < 3 ? POS_VARIANCE_FLOOR : VEL_VARIANCE_FLOOR);
+      let acc = 0;
+      for (let j = 0; j <= i; j++) acc += this.L[i * N + j] * tv[j];
+      ph[i] = acc;
+    }
+    let s = r;
+    for (let i = 0; i < N; i++) s += h[i] * ph[i];
+    if (!(s > 0) || !Number.isFinite(s)) return;
+
+    const K = new Float64Array(N);
+    for (let i = 0; i < N; i++) K[i] = ph[i] / s;
+    for (let i = 0; i < N; i++) this.x[i] += K[i] * innovation;
+
+    // Stack B = [ (I - K h^T) L ; sqrt(r) K ]^T as a (N+1) x N matrix so the
+    // QR returns an N x N R; P+ = B^T B = R^T R, hence L+ = R^T.
+    const W = N + 1;
+    const B = new Float64Array(W * N);
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < N; j++) {
+        // B row i = column i of (M L), so that B^T B = (M L)(M L)^T.
+        let acc = 0;
+        for (let k = i; k < N; k++) {
+          const jk = j === k ? 1 : 0;
+          acc += (jk - K[j] * h[k]) * this.L[k * N + i];
+        }
+        B[i * N + j] = acc;
+      }
+    }
+    for (let i = 0; i < N; i++) B[N * N + i] = Math.sqrt(r) * K[i];
+    const R = householderR(B, W, N);
+    for (let i = 0; i < N; i++) {
+      if (R[i * N + i] < 0) {
+        for (let j = i; j < N; j++) R[i * N + j] = -R[i * N + j];
+      }
+    }
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < N; j++) {
+        this.L[i * N + j] = i >= j ? R[j * N + i] : 0;
+      }
     }
   }
 
@@ -321,4 +431,42 @@ export class Navigator {
     this.x[4] += dv.y;
     this.x[5] += dv.z;
   }
+}
+
+/** Householder QR of an m x n (m >= n) row-major matrix; returns R (n x n upper). */
+export function householderR(A: Float64Array, m: number, n: number): Float64Array {
+  const a = A.slice();
+  const v = new Float64Array(m);
+  for (let k = 0; k < n; k++) {
+    let norm = 0;
+    for (let i = k; i < m; i++) norm += a[i * n + k] ** 2;
+    norm = Math.sqrt(norm);
+    if (norm < 1e-300) continue;
+    const alpha = a[k * n + k] >= 0 ? -norm : norm;
+    // Capture the Householder vector BEFORE applying the reflection: applying
+    // it in place would zero the column that the trailing columns still need.
+    v[0] = a[k * n + k] - alpha;
+    for (let i = k + 1; i < m; i++) v[i - k] = a[i * n + k];
+    let vnorm2 = 0;
+    for (let i = 0; i < m - k; i++) vnorm2 += v[i] ** 2;
+    if (vnorm2 < 1e-300) continue;
+    for (let j = k; j < n; j++) {
+      let dot = 0;
+      for (let i = k; i < m; i++) dot += v[i - k] * a[i * n + j];
+      const f = (2 * dot) / vnorm2;
+      for (let i = k; i < m; i++) a[i * n + j] -= f * v[i - k];
+    }
+  }
+  const R = new Float64Array(n * n);
+  for (let i = 0; i < n; i++) {
+    for (let j = i; j < n; j++) R[i * n + j] = a[i * n + j];
+  }
+  return R;
+}
+
+function arrayState(a: Float64Array): StateVector {
+  return {
+    pos: new Vector3(a[0], a[1], a[2]),
+    vel: new Vector3(a[3], a[4], a[5]),
+  };
 }

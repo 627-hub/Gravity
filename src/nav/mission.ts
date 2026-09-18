@@ -10,11 +10,17 @@ import {
 } from './navigator';
 import type { TransferPlan } from './plan';
 import { propagate } from './propagate';
+import { TruthTrajectory } from './truth';
 import { MPS_TO_AUDAY, MU_SUN, toKms } from './units';
 
 // A flown mission: the planned Lambert arc plus execution errors, noisy
-// tracking and TCM (trajectory correction manoeuvre) history. Flight physics
-// is two-body propagation between impulses.
+// tracking and TCM (trajectory correction manoeuvre) history.
+//
+// TRUTH physics default to N-BODY: the trajectory is integrated in the full
+// force field (Sun + planets + moons + SRP, patched-conic exclusions for the
+// departure/arrival body), while the onboard computer keeps its two-body
+// model. The difference is genuine model error — the L2 problem the filter
+// and the TCMs must live with. 'two-body' recovers the classic exact arcs.
 //
 // Two state tracks live here:
 //   - the TRUTH state (what actually happens), propagated between burns;
@@ -55,6 +61,15 @@ export interface MissionOptions {
   tracking?: TrackingTier | null;
   /** Tracking station ephemeris; defaults to Earth. */
   station?: Ephemeris;
+  /**
+   * Truth physics. 'n-body' (default) integrates the real trajectory in the
+   * full force field (Sun + planets + moons + SRP) while the onboard computer
+   * keeps believing its two-body model — the model error the filter and the
+   * TCMs must live with. 'two-body' keeps the classic exact-arc behaviour.
+   */
+  physics?: 'two-body' | 'n-body';
+  /** Solar radiation pressure in the truth model (n-body only; default on). */
+  srp?: boolean;
 }
 
 export class Mission {
@@ -68,6 +83,9 @@ export class Mission {
   tcmUsedKms = 0;
 
   private injectError: boolean;
+  private truthPhysics: 'two-body' | 'n-body';
+  private srp: boolean;
+  private trajectories: TruthTrajectory[] = [];
   private station: Ephemeris;
   private beacon: Ephemeris | null;
   private navigator: Navigator | null = null;
@@ -85,6 +103,8 @@ export class Mission {
   constructor(plan: TransferPlan, opts: MissionOptions = {}) {
     this.plan = plan;
     this.injectError = opts.injectError ?? false;
+    this.truthPhysics = opts.physics ?? 'n-body';
+    this.srp = opts.srp ?? true;
     const earth = PLANETS.find((b) => b.id === 'earth')!;
     this.station = opts.station ?? bodyEphemeris(earth);
     const target = PLANETS.find((b) => b.id === plan.targetId);
@@ -133,6 +153,15 @@ export class Mission {
       endDay: this.plan.arrivalDay,
     };
     this.segments.push(first);
+    this.trajectories = [];
+    if (this.truthPhysics === 'n-body') {
+      this.trajectories.push(
+        new TruthTrajectory(first.state, first.startDay, first.endDay, {
+          srp: this.srp,
+          exclude: [this.plan.departureId, this.plan.targetId],
+        }),
+      );
+    }
     this.predicted = this.sampleArc(first.state, first.startDay, first.endDay);
     this.lastPredictDay = -Infinity;
   }
@@ -196,6 +225,14 @@ export class Mission {
 
   /** Truth state at `t` (valid for t >= departureDay). */
   stateAt(t: number): StateVector {
+    if (this.truthPhysics === 'n-body') {
+      // Pick the trajectory covering t (segments are ordered by start day).
+      for (let i = this.trajectories.length - 1; i >= 0; i--) {
+        const tr = this.trajectories[i];
+        if (t >= tr.startDay) return tr.stateAt(t);
+      }
+      if (this.trajectories.length) return this.trajectories[0].stateAt(t);
+    }
     const seg = this.segmentFor(t);
     return propagate(seg.state, t - seg.startDay, MU_SUN);
   }
@@ -230,8 +267,7 @@ export class Mission {
 
   /** True separation from the rendezvous point at arrival, AU. */
   truthMissDistance(): number {
-    const seg = this.segments[this.segments.length - 1];
-    const arrive = propagate(seg.state, this.plan.arrivalDay - seg.startDay, MU_SUN);
+    const arrive = this.stateAt(this.plan.arrivalDay);
     return arrive.pos.distanceTo(this.plan.r2);
   }
 
@@ -308,6 +344,14 @@ export class Mission {
       vel: truth.vel.clone().add(sol.dv),
     };
     this.segments.push({ state: truthAfter, startDay: t, endDay: this.plan.arrivalDay });
+    if (this.truthPhysics === 'n-body') {
+      this.trajectories.push(
+        new TruthTrajectory(truthAfter, t, this.plan.arrivalDay, {
+          srp: this.srp,
+          exclude: [this.plan.departureId, this.plan.targetId],
+        }),
+      );
+    }
     this.navigator?.applyBurn(sol.dv);
     this.refreshPrediction(t);
     this.tcmCount += 1;

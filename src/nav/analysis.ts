@@ -13,6 +13,35 @@ export interface ApproachEvent {
   distance: number;
 }
 
+/**
+ * Cubic Hermite interpolation of position AND velocity on [a, b] (velocity is
+ * the analytic derivative of the position polynomial), for sampling truth
+ * trajectories that were integrated numerically.
+ */
+export function hermiteState(
+  a: TrajectoryPoint,
+  b: TrajectoryPoint,
+  t: number,
+): { pos: Vector3; vel: Vector3 } {
+  const h = b.t - a.t;
+  const s = (t - a.t) / h;
+  const s2 = s * s;
+  const s3 = s2 * s;
+  const pos = new Vector3()
+    .copy(a.pos)
+    .multiplyScalar(2 * s3 - 3 * s2 + 1)
+    .addScaledVector(a.vel, h * (s3 - 2 * s2 + s))
+    .addScaledVector(b.pos, -2 * s3 + 3 * s2)
+    .addScaledVector(b.vel, h * (s3 - s2));
+  const vel = new Vector3()
+    .copy(a.pos)
+    .multiplyScalar((6 * s2 - 6 * s) / h)
+    .addScaledVector(a.vel, 3 * s2 - 4 * s + 1)
+    .addScaledVector(b.pos, (-6 * s2 + 6 * s) / h)
+    .addScaledVector(b.vel, 3 * s2 - 2 * s);
+  return { pos, vel };
+}
+
 /** Cubic Hermite interpolation of the spacecraft position on [a, b]. */
 export function hermitePos(a: TrajectoryPoint, b: TrajectoryPoint, t: number): Vector3 {
   const h = b.t - a.t;

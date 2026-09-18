@@ -47,6 +47,9 @@ export function buildNavConsole(world: World): () => void {
     <div class="nc-sec">姿态 · 指向</div>
     <div class="nc-row"><span>航向 / 俯仰（黄道系）</span><b id="ncYaw"></b></div>
     <div class="nc-row"><span>转向率（需保持）</span><b id="ncGyro"></b></div>
+    <div class="nc-row"><span>指向误差（PD）</span><b id="ncPoint"></b></div>
+    <div class="nc-row"><span>定姿误差（星敏）</span><b id="ncAttEst"></b></div>
+    <div class="nc-row"><span>陀螺 / 星敏</span><b id="ncSensors"></b></div>
     <div class="nc-row"><span>太阳偏角 / 入射面板</span><b id="ncSun"></b></div>
     <div class="nc-row"><span>目标偏角 / 地球偏角</span><b id="ncBear"></b></div>
     <div class="nc-sec">传感器 · 测量</div>
@@ -79,7 +82,7 @@ export function buildNavConsole(world: World): () => void {
     <div class="nc-bar"><span id="ncBar"></span></div>
     <div class="nc-meta" id="ncMeta"></div>
     <button id="ncFollow" class="nc-follow">🎯 跟随飞船</button>
-    <div class="nc-note">传感为模拟读数：地面站测距/测距率、船载相机测目标方位；姿态按弹道推算（理想定姿）。</div>
+    <div class="nc-note">传感为模拟读数：地面站测距/测距率、船载相机测目标方位；姿态由 ADCS 物理模型给出（PD 指向 + 陀螺/星敏）。</div>
   `;
   app.appendChild(root);
 
@@ -272,6 +275,15 @@ export function buildNavConsole(world: World): () => void {
     set(
       'ncGyro',
       snap.accel.gravity ? `${att.gyroDegPerDay.toFixed(2)} °/天` : '—（停靠中）',
+    );
+    const adcs = snap.adcs;
+    set('ncPoint', adcs ? `${adcs.pointingArcsec.toFixed(1)}″ · 角速率 ${adcs.rateDegS.toExponential(1)} °/s` : '—（巡航后激活）');
+    set('ncAttEst', adcs ? `${adcs.estimateArcsec.toFixed(1)}″（星敏 ${adcs.starSigmaArcsec}″）` : '—');
+    set(
+      'ncSensors',
+      adcs
+        ? `ARW ${adcs.gyroArwDegSqrtH} °/√h · 星敏更新 ${adcs.starUpdates} 次`
+        : '—',
     );
     // Panel normal is the craft's up axis: incidence = 90° − sun elevation.
     set('ncSun', `${att.sun.offDeg.toFixed(1)}° / ${(90 - att.sun.elDeg).toFixed(1)}°`);

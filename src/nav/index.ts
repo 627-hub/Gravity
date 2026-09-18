@@ -16,3 +16,4 @@ export * from './flyby';
 export * from './targeting';
 export * from './plan';
 export * from './elements';
+export * from './truth';

@@ -30,12 +30,19 @@ const plan = bestTransfer({
 const km = (au: number): number => (au * AU) / 1000;
 
 describe('mission with TCM corrections', () => {
-  it('a perfect launch arrives on target', () => {
-    const m = new Mission(plan, { injectError: false });
+  it('two-body truth arrives exactly on target', () => {
+    const m = new Mission(plan, { injectError: false, physics: 'two-body' });
     expect(m.truthMissDistance()).toBeLessThan(1e-7);
     const arrive = m.stateAt(plan.arrivalDay);
     expect(arrive.pos.distanceTo(plan.r2)).toBeLessThan(1e-7);
     expect(m.predictedPath().length).toBe(513);
+  });
+
+  it('n-body truth drifts off the two-body plan (real model error)', () => {
+    const m = new Mission(plan, { injectError: false }); // n-body by default
+    const missKm = km(m.truthMissDistance());
+    expect(missKm).toBeGreaterThan(1e4);  // SRP + third bodies push it off
+    expect(missKm).toBeLessThan(1e7);
   });
 
   it('a dispersive launch misses by a visible margin', () => {
@@ -46,7 +53,7 @@ describe('mission with TCM corrections', () => {
   });
 
   it('re-solves Lambert mid-flight and arrives exactly after the TCM', () => {
-    const m = new Mission(plan, { injectError: true });
+    const m = new Mission(plan, { injectError: true, physics: 'two-body' });
     const tMid = plan.departureDay + plan.tof * 0.5;
     const sol = m.solveTcm(tMid);
     expect(sol).not.toBeNull();
@@ -101,7 +108,7 @@ describe('mission with TCM corrections', () => {
   });
 
   it('supports multiple corrections and refuses past arrival', () => {
-    const m = new Mission(plan, { injectError: true });
+    const m = new Mission(plan, { injectError: true, physics: 'two-body' });
     const t1 = plan.departureDay + plan.tof * 0.3;
     const t2 = plan.departureDay + plan.tof * 0.7;
     // Inject another dispersion by nudging the velocity after the first burn.
