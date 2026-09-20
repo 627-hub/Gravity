@@ -292,6 +292,7 @@ export class Mission {
 
   private throttleRateKgPerDay(): number {
     const f = this.drive.exhaustKms;
+    if (this.drive.kind !== 'rocket') return 0; // 光帆不耗工质
     if (!Number.isFinite(f) || !this.throttle || this.throttle.level <= 0) return 0;
     const thrustN = this.throttle.level * this.maxThrustN();
     return (thrustN / (f * 1000)) * 86400;
@@ -300,6 +301,11 @@ export class Mission {
   /** 满油门推力（N）：按给定加速度量级与初始质量定义。 */
   private maxThrustN(): number {
     return this.drive.accelMps2 * (DRY_MASS_KG + PROPELLANT_KG0);
+  }
+
+  /** 是否是无工质推进（光帆/束能）——质量不随点火变化。 */
+  get isPropellantless(): boolean {
+    return this.drive.kind !== 'rocket';
   }
 
   /** 当前推力加速度（m/s²）与 T/W 比值。 */
@@ -332,13 +338,21 @@ export class Mission {
           srp: this.srp,
           mass0Kg: mass0Kg,
           thrust: level > 0
-            ? {
-                direction: (pos, vel, out) => thrustDirection(dir, pos, vel, out),
-                thrustN: level * this.maxThrustN(),
-                exhaustKms: drive.exhaustKms,
-                mass0Kg,
-                dryMassKg: DRY_MASS_KG,
-              }
+            ? drive.kind === 'rocket'
+              ? {
+                  direction: (pos, vel, out) => thrustDirection(dir, pos, vel, out),
+                  thrustN: level * this.maxThrustN(),
+                  exhaustKms: drive.exhaustKms,
+                  mass0Kg,
+                  dryMassKg: DRY_MASS_KG,
+                }
+              : {
+                  // 无工质：加速度由外部光子给，质量不变
+                  direction: (pos, vel, out) => thrustDirection(dir, pos, vel, out),
+                  accelAt: drive.kind === 'sail-solar'
+                    ? (pos) => level * drive.accelMps2 / Math.max(pos.lengthSq(), 1e-6)
+                    : () => level * drive.accelMps2,
+                }
             : undefined,
         }),
       );

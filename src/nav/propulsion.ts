@@ -17,7 +17,13 @@ import { Vector3 } from 'three';
 
 /** 推力/点火方向（相对飞船当前状态）。 */
 export type ThrustDir =
-  | 'prograde' | 'retrograde' | 'radialOut' | 'radialIn' | 'normal' | 'antiNormal';
+  | 'prograde' | 'retrograde' | 'radialOut' | 'radialIn' | 'normal' | 'antiNormal'
+  /** 光帆外扩：帆面法线偏离日心方向一个锥角并朝顺行侧——纯径向光压不做功
+   *  （F·v = 0），必须靠这个切向分量才能把轨道螺旋推出去。 */
+  | 'sailOut';
+
+/** 光帆锥角（度）：真实帆的典型工作点。 */
+export const SAIL_CONE_DEG = 35;
 
 /** 由状态解出方向单位矢量（日心黄道系）。 */
 export function thrustDirection(
@@ -26,6 +32,12 @@ export function thrustDirection(
   vel: Vector3,
   out: Vector3 = new Vector3(),
 ): Vector3 {
+  if (dir === 'sailOut') {
+    const rHat = out.copy(pos).normalize();
+    const vHat = new Vector3().copy(vel).normalize();
+    const a = (SAIL_CONE_DEG * Math.PI) / 180;
+    return rHat.multiplyScalar(Math.cos(a)).addScaledVector(vHat, Math.sin(a)).normalize();
+  }
   if (dir === 'prograde') return out.copy(vel).normalize();
   if (dir === 'retrograde') return out.copy(vel).normalize().negate();
   if (dir === 'radialOut') return out.copy(pos).normalize();
@@ -37,6 +49,8 @@ export function thrustDirection(
 export interface Drive {
   id: string;
   label: string;
+  /** 推进方式：自带工质 / 太阳帆（a∝1/r²） / 束能帆（射程内近似常数）。 */
+  kind: 'rocket' | 'sail-solar' | 'sail-beamed';
   /** 有效排气速度 v_e = Isp·g0，km/s（光帆=Infinity，不携带推进剂）。 */
   exhaustKms: number;
   /** 工作加速度量级，m/s²（决定一次点火要烧多久）。 */
@@ -49,18 +63,20 @@ export interface Drive {
 }
 
 export const DRIVES: Drive[] = [
-  { id: 'chemical', label: '化学', exhaustKms: 4.413, accelMps2: 20, propellant: true, ispS: 450,
+  { kind: 'rocket', id: 'chemical', label: '化学', exhaustKms: 4.413, accelMps2: 20, propellant: true, ispS: 450,
     note: 'Isp 450 s：推质比高、比冲低。行星际的主力，星际没戏。' },
-  { id: 'nuclear', label: '核热', exhaustKms: 8.83, accelMps2: 5, propellant: true, ispS: 900,
+  { kind: 'rocket', id: 'nuclear', label: '核热', exhaustKms: 8.83, accelMps2: 5, propellant: true, ispS: 900,
     note: 'Isp 900 s：同 Δv 的质量比开方，地面样机验证过。' },
-  { id: 'nep', label: '核电推进', exhaustKms: 29.4, accelMps2: 3e-4, propellant: true, ispS: 3000,
+  { kind: 'rocket', id: 'nep', label: '核电推进', exhaustKms: 29.4, accelMps2: 3e-4, propellant: true, ispS: 3000,
     note: 'Isp 3000 s：质量比可观，但推力 mN~N 级，只能走螺旋，数月连续点火。' },
-  { id: 'fusion', label: '聚变', exhaustKms: 1000, accelMps2: 1e-3, propellant: true, ispS: 102000,
+  { kind: 'rocket', id: 'fusion', label: '聚变', exhaustKms: 1000, accelMps2: 1e-3, propellant: true, ispS: 102000,
     note: 'v_e ~10³ km/s：星际的门槛（v_e 与目标速度同量级才行），尚未实现。' },
-  { id: 'antimatter', label: '反物质', exhaustKms: 1e5, accelMps2: 1e-2, propellant: true, ispS: 1.02e7,
+  { kind: 'rocket', id: 'antimatter', label: '反物质', exhaustKms: 1e5, accelMps2: 1e-2, propellant: true, ispS: 1.02e7,
     note: 'v_e ~0.3c：质量比宽裕，但反物质产量以 ng 计、储存极难。' },
-  { id: 'sail', label: '光帆 / 束能', exhaustKms: Infinity, accelMps2: 1e-3, propellant: false, ispS: null,
-    note: '不携带推进剂：能量与工质都留在母星（激光阵/太阳），彻底绕开火箭方程。' },
+  { kind: 'sail-solar', id: 'solar-sail', label: '太阳帆', exhaustKms: Infinity, accelMps2: 1e-4, propellant: false, ispS: null,
+    note: '不携带推进剂：动量来自太阳光子（a ∝ 1/r²，1 AU 处 ~0.1 mm/s²）。必须偏锥角才有切向推力。' },
+  { kind: 'sail-beamed', id: 'beam-sail', label: '束能帆', exhaustKms: Infinity, accelMps2: 1e-3, propellant: false, ispS: null,
+    note: '不携带推进剂：激光阵从母星持续供能供动量，射程内加速度近似常数、方向可指。' },
 ];
 
 /** 用排气速度表达的质量比 m0/mf。 */

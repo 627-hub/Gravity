@@ -16,7 +16,7 @@ describe('推进系统：Δv -> 可行性', () => {
     expect(ntr).toBeLessThan(chem);      // 核热好一截
     expect(nep).toBeLessThan(1.2);       // 电推几乎不花推进剂
     expect(propellantFractionVe(dv, drive('nep'))).toBeLessThan(0.2);
-    expect(propellantFractionVe(dv, drive('sail'))).toBe(0); // 光帆不带推进剂
+    expect(propellantFractionVe(dv, drive('solar-sail'))).toBe(0); // 光帆不带推进剂
   });
 
   it('点火时长：化学是"点数分钟"，电推是"数月"连续推', () => {

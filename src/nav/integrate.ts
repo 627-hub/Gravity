@@ -11,14 +11,20 @@ import type { AccelFn } from './perturbations';
 export interface ThrustModel {
   /** 推力方向（单位矢量，日心黄道系），由当前状态决定（如顺行 = v̂）。 */
   direction: (pos: Vector3, vel: Vector3, out: Vector3) => Vector3;
-  /** 推力，N。 */
-  thrustN: number;
+  /**
+   * 无工质推进（光帆/束能）：直接给出该位置的加速度（m/s²），此时不用
+   * F/m、也不消耗质量——动量来自外部光子，不来自携带的工质。
+   * 太阳帆 a ∝ 1/r²；束能帆（激光阵）在射程内近似常数。
+   */
+  accelAt?: (pos: Vector3) => number;
+  /** 推力，N（有工质推进用）。 */
+  thrustN?: number;
   /** 排气速度 v_e = Isp·g0，km/s。 */
-  exhaustKms: number;
+  exhaustKms?: number;
   /** 点火开始时的质量，kg。 */
-  mass0Kg: number;
+  mass0Kg?: number;
   /** 干重，kg（推进剂耗尽后不再减重）。 */
-  dryMassKg: number;
+  dryMassKg?: number;
 }
 
 /** 恒定推力下的质量流，kg/天。 */
@@ -93,12 +99,14 @@ export function integrate(
   const maxStep = opts.maxStep ?? Math.abs(dt);
 
   const thrust = opts.thrust;
-  const mdot = thrust ? massFlowKgPerDay(thrust.thrustN, thrust.exhaustKms) : 0;
+  const rocket = thrust && !thrust.accelAt ? thrust : null; // 有工质（火箭）模式
+  const mdot = rocket ? massFlowKgPerDay(rocket.thrustN!, rocket.exhaustKms!) : 0;
   const massAt = (tt: number): number => {
-    if (!thrust) return 0;
-    return Math.max(thrust.dryMassKg, thrust.mass0Kg - mdot * (tt - t0));
+    if (!rocket) return 0;
+    return Math.max(rocket.dryMassKg!, rocket.mass0Kg! - mdot * (tt - t0));
   };
-  const thrustAccelAUday = thrust ? (thrust.thrustN * DAY * DAY) / AU : 0;
+  const thrustAccelAUday = rocket ? (rocket.thrustN! * DAY * DAY) / AU : 0;
+  const MPS2_TO_AUDAY2 = (DAY * DAY) / AU;
   const tDir = new Vector3();
 
   const yPos = initial.pos.clone();
@@ -115,7 +123,7 @@ export function integrate(
 
   let t = t0;
   const points: TrajectoryPoint[] = [
-    { t, pos: yPos.clone(), vel: yVel.clone(), massKg: thrust ? massAt(t) : undefined },
+    { t, pos: yPos.clone(), vel: yVel.clone(), massKg: rocket ? massAt(t) : undefined },
   ];
 
   for (let step = 0; step < maxSteps; step++) {
@@ -123,12 +131,21 @@ export function integrate(
     if (Math.abs(h) > Math.abs(remaining)) h = remaining;
     if (Math.abs(h) < minStep) h = Math.min(minStep, Math.abs(remaining)) * dir;
 
-    // 连续推力项：与引力叠加。质量随点火线性下降，所以同一推力下加速度
-    // 会越来越大（也正因如此不能把它当脉冲处理）。
+    // 推力项：与引力叠加。
+    //  · 火箭模式：质量随点火线性下降，同一推力下加速度越来越大；
+    //  · 光帆/束能：加速度来自外部光子（a ∝ 1/r² 或常数），不消耗质量。
     const addThrust = (tt: number, pos: Vector3, vel: Vector3, out: Vector3): void => {
-      if (!thrust || mdot <= 0) return;
+      if (!thrust) return;
+      if (thrust.accelAt) {
+        const a = thrust.accelAt(pos); // m/s²
+        if (a <= 0) return;
+        thrust.direction(pos, vel, tDir);
+        out.addScaledVector(tDir, a * MPS2_TO_AUDAY2);
+        return;
+      }
+      if (!rocket || mdot <= 0) return;
       const m = massAt(tt);
-      if (m <= thrust.dryMassKg + 1e-9) return; // 推进剂耗尽
+      if (m <= rocket.dryMassKg! + 1e-9) return; // 推进剂耗尽
       thrust.direction(pos, vel, tDir);
       out.addScaledVector(tDir, thrustAccelAUday / m);
     };
@@ -176,7 +193,7 @@ export function integrate(
       t += h;
       yPos.copy(newPos);
       yVel.copy(newVel);
-      points.push({ t, pos: yPos.clone(), vel: yVel.clone(), massKg: thrust ? massAt(t) : undefined });
+      points.push({ t, pos: yPos.clone(), vel: yVel.clone(), massKg: rocket ? massAt(t) : undefined });
       if (Math.abs(t - tEnd) < 1e-12 * Math.max(1, Math.abs(tEnd))) break;
     }
 

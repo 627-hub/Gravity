@@ -86,7 +86,8 @@ export function buildNavConsole(world: World): () => void {
         <option value="nuclear">核热</option>
         <option value="nep">核电推进</option>
         <option value="fusion">聚变</option>
-        <option value="sail">光帆/束能</option>
+        <option value="solar-sail">太阳帆</option>
+        <option value="beam-sail">束能帆</option>
       </select>
       <input type="number" id="ncThrottle" value="100" min="0" max="100" step="10" title="油门 %" />
       <select id="ncThrustDir">
@@ -96,6 +97,7 @@ export function buildNavConsole(world: World): () => void {
         <option value="radialIn">径向内</option>
         <option value="normal">法向</option>
         <option value="antiNormal">反法向</option>
+        <option value="sailOut">帆外扩（锥角）</option>
       </select>
       <button id="ncBurnOn">点火</button>
       <button id="ncBurnOff">关机</button>
@@ -439,11 +441,15 @@ export function buildNavConsole(world: World): () => void {
     burnGo.disabled = snap.phase === 'arrived';
     set(
       'ncDrive',
-      `${st.driveLabel} · 质量 ${st.massKg.toFixed(0)} kg（推进剂 ${st.propellantKg.toFixed(0)}）`
-        + ` · 推力加速度 ${st.thrustMms2.toFixed(3)} mm/s²`
+      `${st.driveLabel} · 质量 ${st.massKg.toFixed(0)} kg`
+        + (st.driveLabel === '太阳帆' || st.driveLabel === '束能帆'
+          ? '（无工质，动量来自外部光子）'
+          : `（推进剂 ${st.propellantKg.toFixed(0)}）`)
+        + ` · 加速度 ${st.thrustMms2.toFixed(3)} mm/s²`
         + (st.thrustActive ? ' · 点火中' : ' · 关机'),
     );
-    burnOn.disabled = snap.phase === 'arrived' || st.propellantKg <= 1;
+    burnOn.disabled = snap.phase === 'arrived'
+      || (st.propellantKg <= 1 && st.driveLabel !== '太阳帆' && st.driveLabel !== '束能帆');
     burnOff.disabled = !st.thrustActive;
 
     bar.style.width = `${(snap.progress * 100).toFixed(1)}%`;
