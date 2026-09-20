@@ -90,7 +90,7 @@ export interface WorldState {
   showAxes: boolean;   // draw the rotation-axis line on visible bodies
   paused: boolean;
   daysPerSecond: number;
-  // Teaching aids, driven by the guided tour.
+  // Teaching aids (the orbit/gravity diagrams).
   demoMode: DemoMode;
   vecVelocity: boolean;   // velocity (tangent) arrow
   vecGravity: boolean;    // gravity pull toward the attractor
@@ -251,7 +251,7 @@ export class World {
   private wantAutoRotate = false;
 
   // Free-explore hover: when on, hovering a body reveals its label + orbit.
-  private hoverEnabled = false;
+  private hoverEnabled = true;
   private hoveredId: string | null = null;
   private raycaster = new Raycaster();
   private pointerNDC = new Vector2(2, 2); // off-screen until the mouse moves
@@ -270,7 +270,7 @@ export class World {
   private followUserAdjusted = false;
   private followDelta = new Vector3();
 
-  /** When non-null, only bodies whose id is present are shown (tour mode). */
+  /** When non-null, only bodies whose id is present are shown. */
   visible: Set<string> | null = null;
 
   // Navigation mission: a planned transfer flown by the spacecraft.
@@ -469,7 +469,7 @@ export class World {
     cv.addEventListener('pointerleave', () => { this.pointerNDC.set(2, 2); });
 
     // Drag to rotate: suspend auto-framing while dragging; on release, ease
-    // back to the slide's framing (during the tour) or stay put (free explore).
+    // back to the home framing or stay put (the default).
     this.controls.addEventListener('start', () => {
       this.userDragging = true;
       // Free explore + following: keep the pose the user is creating.
@@ -1707,7 +1707,7 @@ export class World {
     this.followHasLast = false;
   }
 
-  /** Restrict the visible bodies (tour). Pass null to show everything. */
+  /** Restrict the visible bodies. Pass null to show everything. */
   setVisibleBodies(ids: string[] | null): void {
     this.visible = ids ? new Set(ids) : null;
   }
@@ -1720,7 +1720,7 @@ export class World {
   /** Whether the camera springs back to the slide framing after a drag. */
   setCameraReturn(on: boolean): void { this.returnOnRelease = on; }
 
-  /** Enable mouse-wheel zoom (free-explore only; off during the guided tour). */
+  /** Enable mouse-wheel zoom. */
   setZoomEnabled(on: boolean): void { this.controls.enableZoom = on; }
 
   /** Hover-to-reveal a body's label + orbit (free-explore only). */
@@ -2095,7 +2095,7 @@ export class World {
 
     if (this.state.twoD) {
       // Overhead for the 2D ecliptic view; shift the aim so the body sits in
-      // the upper area (clear of the bottom tour panel). Screen-up is −Z.
+      // the upper area (clear of the bottom panels). Screen-up is −Z.
       const raise = dist * 0.4;
       const aim = new Vector3(target.x, 0, target.z + raise);
       this.flyTo(new Vector3(target.x, dist, target.z + raise + 0.001), aim);
@@ -2771,7 +2771,7 @@ export class World {
 
   private moonShown(mv: MoonView): boolean {
     if (!this.isVisible(mv.parent.id)) return false;
-    // In tour mode, a moon shows when its id is explicitly listed; otherwise
+    // A moon shows when its id is explicitly listed; otherwise
     // it follows the global "show moons" toggle.
     if (this.visible) return this.visible.has(mv.moon.id);
     return this.state.showMoons;

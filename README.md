@@ -3,9 +3,12 @@
 An interactive, physically grounded model of the solar system that demonstrates
 how gravity shapes orbits — built with **TypeScript + Three.js + Vite**.
 
-It opens with a guided, 24-step walkthrough and then hands you a free-explore
-mode. Everything is driven by real astronomical data; the only thing the
-renderer ever fakes is the *scale* (and that is a toggle you control).
+It is a **flight model for interplanetary navigation**: free flight over the
+live solar system, plus mission planning (transfer windows, synchronous-orbit
+spaceports), onboard navigation (tracking, square-root EKF, course
+corrections) and a flight-deck console. Everything is driven by real
+astronomical data; the only thing the renderer ever fakes is the *scale* (and
+that is a toggle you control).
 
 ## Visuals
 
@@ -17,9 +20,9 @@ renderer ever fakes is the *scale* (and that is a toggle you control).
   banded gas giants with a Great Red Spot, a cloudy blue Earth, cratered rocky
   moons, and a radial Saturn ring with the Cassini gap. No image files, so it
   works fully offline.
-- **Smooth transitions** — stepping through the tour eases the camera to each
-  target (cancelled the instant you grab the controls) and fades bodies and
-  orbits in and out, rather than snapping.
+- **Smooth transitions** — camera moves ease to their target (cancelled the
+  instant you grab the controls) and bodies/orbits fade in and out rather than
+  snapping.
 
 ## Run it
 
@@ -29,45 +32,23 @@ npm run dev      # opens http://localhost:5173
 npm run build    # type-check + production bundle into dist/
 ```
 
-## The guided tour
+## 星际航行 (interplanetary navigation)
 
-A narrated, 24-step walkthrough that builds up *why* orbits exist before showing
-the whole system. Jump around with the **dropdown** or the dots, and every step
-has a **deep link** — paste `…/#why-no-fall` to land straight on that step. An
-**EN / PL** switch in the panel header toggles the narration between English and
-Polish (the choice is remembered).
+Pick a departure and a target body and the planner scans a rolling window for
+the cheapest transfer. Missions leave from — and arrive at — a **spaceport in
+synchronous orbit** around the body (Earth's port sits at 42,164 km, one day
+period), not from the planet's centre; the Δv ledger is the escape burn plus
+course corrections plus the capture burn. Surface-to-port traffic is a separate
+vehicle and is deliberately out of scope.
 
-1. **What is gravity?** (`#what-is-gravity`) — just two bodies and the equal-and-
-   opposite force vectors between them (Newton's 3rd law); same force, unequal effect.
-2. **Gravity builds the Sun** (`#birth-of-sun`) — a cloud of dust collapses and
-   swirls into the Sun (accretion animation).
-3. **Gravity builds the Earth** (`#birth-of-earth`) — the same in miniature in the
-   leftover disk; the young Earth glows molten as it forms.
-4. **A moving body keeps moving** (`#inertia`) — the Sun is removed; Earth drifts
-   in a straight line at constant velocity (Newton's 1st law). Inertia alone.
-5. **Why the Earth doesn't fall into the Sun** (`#why-no-fall`) — velocity vector +
-   gravity vector + a dashed "straight path without gravity." Gravity bends the
-   straight line into a closed loop — an orbit is just falling and always missing.
-6. **The Earth and the Moon** (`#earth-moon`) — the same law one level down.
-7. **Why the Moon doesn't fall to Earth** (`#moon-no-fall`) — the orbit-balance
-   argument again, now Moon↔Earth: gravity + sideways velocity vectors and the
-   dashed straight-line path. The camera follows Earth as it orbits.
-8. **Into the third dimension** (`#into-3d`) — tilt into 3D for real inclinations;
-   projection drop-lines map a 3D position onto the flat 2D plane.
-9. **Spinning on their axes** (`#self-rotation`) — besides orbiting, every body
-   spins on its own (tilted) axis; this is where axial rotation switches on.
-10. **The Sun moves too — orbits are really helices** (`#sun-moving`) — the Sun
-    drifts at 45° through a parallax starfield; planets' real-space trails coil
-    into 3-D helices around its path.
-11. **The same forces, still at work** (`#sun-moving-vectors`) — velocity (along
-    the helix) + gravity (toward the Sun) arrows on every body during that motion.
-12. **Moons ride along too** (`#sun-moving-moons`) — the Moon coils around the
-    Earth's coil around the Sun's path: helices within helices.
-13. **The whole solar system** (`#solar-system`) — all eight planets, Pluto, and
-    the major moons on their real J2000 orbits.
-
-`#explore` (or "Skip · Explore") leaves the tour for the free-explore panel;
-"Replay guided tour" restarts it from step 1.
+While the craft flies, the flight-deck console shows the onboard state: the
+attitude/pointing indicator, the instrument readouts (accelerometer, ground
+ranging, onboard optical navigation), the osculating orbit and a heliocentric
+mini-map. The onboard computer carries a square-root EKF over range/range-rate
+tracking; **trajectory correction manoeuvres are computed from that estimate,
+not from truth**, so their quality follows the tracking tier. The truth
+trajectory is integrated in the full force field (Sun + planets + moons + solar
+radiation pressure).
 
 ## What's real
 

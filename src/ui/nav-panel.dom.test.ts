@@ -50,7 +50,7 @@ describe('nav panel wiring (DOM)', () => {
   it('scan updates the hint and enables launch; launch calls the world', async () => {
     buildDom();
     const world = stubWorld();
-    buildUI(world, () => {});
+    buildUI(world);
     buildNavPanel(world);
 
     const scan = document.querySelector('#navScan') as HTMLButtonElement;
@@ -92,7 +92,7 @@ describe('nav panel wiring (DOM)', () => {
       trackingLabel: null, trackCount: 0, estErrorKm: 0, posSigmaKm: 0,
     };
     (world as unknown as { missionStatus: () => unknown }).missionStatus = () => status;
-    buildUI(world, () => {});
+    buildUI(world);
     const sync = buildNavPanel(world);
 
     sync(); // mission active: launch must not be force-disabled beyond "no plan"
@@ -108,7 +108,7 @@ describe('nav panel wiring (DOM)', () => {
   it('immediate launch skips the wait and flies at once', async () => {
     buildDom();
     const world = stubWorld();
-    buildUI(world, () => {});
+    buildUI(world);
     buildNavPanel(world);
 
     const now = document.querySelector('#navNow') as HTMLButtonElement;

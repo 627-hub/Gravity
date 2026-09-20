@@ -53,7 +53,7 @@ export function initMusic(): void {
   btn.addEventListener('click', () => setOn(!on));
   btn.hidden = false;
 
-  // Duck under the narration: the tour fires `gravity-narration` when the
+  // Duck under narration/voice-over events if the app ever fires them.
   // narrator starts/stops speaking; dip the music while it talks.
   window.addEventListener('gravity-narration', (e: Event) => {
     ducking = !!(e as CustomEvent<{ speaking: boolean }>).detail?.speaking;

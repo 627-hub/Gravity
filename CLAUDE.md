@@ -5,10 +5,18 @@ Guidance for AI assistants (and humans) working in this repo.
 ## What this is
 
 **Gravity · Solar System Simulator** — an interactive, physically grounded model
-of the solar system (TypeScript + Three.js + Vite). It opens with a guided,
-narrated walkthrough (English / Polish) that builds up *why* orbits exist, then
-hands the user a free-explore mode. Everything is driven by real astronomical
-data; only the *scale* is faked (and that's a user toggle).
+of the solar system (TypeScript + Three.js + Vite), used as a **flight model for
+interplanetary navigation**: free flight over the live system, plus mission
+planning (transfer windows, spaceport departure/arrival), onboard navigation
+(tracking + square-root EKF), course corrections and a flight-deck console.
+Everything is driven by real astronomical data; only the *scale* is faked (and
+that's a user toggle).
+
+**There is no guided tour.** The app boots straight into free flight. The
+teaching demos that the tour used to drive (`inertia`, `accretion`, `helix`,
+`orbit-intro`, `rocket`, `soi`, `flyby`, `spacetime`, `precession` — the
+`DemoMode` branches in `world.ts`) are still in the code but have **no UI entry
+point** any more; they are candidates for deletion.
 
 ## Commands
 
@@ -57,8 +65,7 @@ src/
     world.ts     the Three.js engine — scene, bodies, orbits, vectors, and every demo
     nav-viz.ts   spacecraft model + transfer arc rendering (NavViz, CRAFT_ID)
   ui/
-    panel.ts     free-explore control panel
-    tour.ts      the guided walkthrough: STEPS data + the Tour controller + i18n (EN/PL)
+    panel.ts     main control panel (scale, physics, focus, time, toggles)
     nav-panel.ts mission controls (pick from/to, scan, launch, tracking tier, TCM);
     nav-console.ts flight-deck console: attitude/pointing indicator (ADI), instrument
                  readouts (accelerometer, ranging, optical nav), orbit + mini-map
@@ -66,27 +73,14 @@ src/
 public/          static assets served at root (e.g. earth_daymap.jpg)
 ```
 
-### How the guided tour works (`src/ui/tour.ts`)
-
-- `STEPS` is an ordered array of `TourStep` objects. **Step numbers are computed
-  from array order — never hardcode them.** Each step has an `id` used as a
-  `#hash` deep link.
-- Each step declares scene state declaratively (scale, physics, 2D/3D, which
-  bodies are `visible`, vectors, `demo` mode, etc.). `Tour.apply(step)` pushes
-  that state into the `World`.
-- Narration is bilingual: English lives in the `STEPS` objects; Polish in the
-  `PL` map keyed by step `id`. **When you add or edit a step, update the `PL`
-  entry too**, and the README step count.
-
 ### How demos work (`src/scene/world.ts`)
 
 `world.ts` is the large, central file. A `DemoMode` string selects special
-behavior in the per-frame `update()` loop. Each mode typically has a `startX()`
-method (sets camera + state) and a branch in the update loop / `updateAstro()`.
-Existing modes: `normal`, `inertia`, `accretion`, `helix`, `orbit-intro`,
-`rocket`, `soi` (spheres of influence), `flyby` (Voyager gravity assists), and
-`spacetime` (Einstein's curved-spacetime grid). Camera moves via an eased
-`flyTo`; on the tour, releasing a drag springs the camera back to the framing.
+behavior in the per-frame `update()` loop. Each mode has a `startX()` method
+(sets camera + state) and a branch in the update loop / `updateAstro()`. Only
+`normal` is reachable from the UI now — the teaching modes (`inertia`,
+`accretion`, `helix`, `orbit-intro`, `rocket`, `soi`, `flyby`, `spacetime`,
+`precession`) are legacy and un-driven. Camera moves via an eased `flyTo`.
 
 ### Mission endpooints: spaceports, not body centres
 

@@ -14,10 +14,9 @@ const dateFmt = (days: number): string =>
 
 export function buildNavPanel(world: World): () => void {
   const controls = document.getElementById('controls');
-  const tourBtn = controls?.querySelector('#tourBtn');
-  if (!controls || !tourBtn) return () => {};
+  if (!controls) return () => {};
 
-  tourBtn.insertAdjacentHTML('beforebegin', `
+  controls.insertAdjacentHTML('beforeend', `
     <div class="group" id="navGroup">
       <div class="glabel">星际航行导航 <span class="nav-build">r4</span></div>
       <div class="row">

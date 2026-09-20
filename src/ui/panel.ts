@@ -4,7 +4,7 @@ import { ALL_BODIES } from '../data/bodies';
 // Builds the control HTML overlay and wires it to the World instance.
 // Kept dependency-free (plain DOM) so the demo has no UI-framework weight.
 
-export function buildUI(world: World, onStartTour: () => void): () => void {
+export function buildUI(world: World): () => void {
   const app = document.getElementById('app')!;
   app.innerHTML = `
     <div class="panel" id="controls">
@@ -59,8 +59,6 @@ export function buildUI(world: World, onStartTour: () => void): () => void {
         <div class="glabel">相机聚焦</div>
         <select id="focus"></select>
       </div>
-
-      <button id="tourBtn" class="tour-restart">▶ 重播引导式导览</button>
     </div>
   `;
 
@@ -121,8 +119,6 @@ export function buildUI(world: World, onStartTour: () => void): () => void {
     world.setShowMoons((e.target as HTMLInputElement).checked);
   });
 
-  (app.querySelector('#tourBtn') as HTMLButtonElement).addEventListener('click', onStartTour);
-
   // ---- time ----
   const speed = app.querySelector('#speed') as HTMLInputElement;
   const speedVal = app.querySelector('#speedVal') as HTMLElement;
@@ -173,7 +169,7 @@ export function buildUI(world: World, onStartTour: () => void): () => void {
     else world.focusOn(selected);
   });
 
-  // Reflect world state into the controls (the tour mutates state directly).
+  // Reflect world state into the controls.
   function setSeg(container: Element, value: string): void {
     container.querySelectorAll('button').forEach((b) =>
       b.classList.toggle('on', (b as HTMLElement).dataset.v === value));

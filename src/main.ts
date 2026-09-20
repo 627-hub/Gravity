@@ -2,23 +2,17 @@ import { World } from './scene/world';
 import { buildUI } from './ui/panel';
 import { buildNavPanel } from './ui/nav-panel';
 import { buildNavConsole } from './ui/nav-console';
-import { Tour } from './ui/tour';
 import { initMusic } from './ui/music';
 
 const canvas = document.getElementById('scene') as HTMLCanvasElement;
 const world = new World(canvas);
 
 // Build the panel first (it sets #app innerHTML); then the navigation console
-// and the Tour overlay append into that DOM. The tour mutates world state
-// directly, so `sync` refreshes the panel controls to match when it exits.
-let tour: Tour;
-const sync = buildUI(world, () => tour.restart());
+// and (later) the nav panel append into that DOM. The app opens straight into
+// free flight over the solar system — no guided walkthrough.
+const sync = buildUI(world);
 const syncNav = buildNavPanel(world);
 const syncConsole = buildNavConsole(world);
-tour = new Tour(world, () => sync());
-
-// Begin in the guided walkthrough (honoring any #step deep link in the URL).
-tour.start();
 
 // Once the scene has rendered its first frame, drop the preloader and — only
 // then, when nothing else is competing for the network — start loading the
