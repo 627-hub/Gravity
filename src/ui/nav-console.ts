@@ -1,4 +1,5 @@
 import { PLANETS } from '../data/bodies';
+import { ISP_PRESETS, propellantFraction } from '../nav/maneuvers';
 import type { Spaceport } from '../nav/spaceport';
 import type { ManualBurnDir, NavSnapshot, PointingReading, World } from '../scene/world';
 
@@ -76,6 +77,7 @@ export function buildNavConsole(world: World): () => void {
     <div class="nc-row"><span>离港逃逸 + 入泊捕获</span><b id="ncDvPlan"></b></div>
     <div class="nc-row"><span>修正已用</span><b id="ncDvUsed"></b></div>
     <div class="nc-row"><span>地表↔港（另案系统）</span><b id="ncSurf"></b></div>
+    <div class="nc-row"><span>燃料（单级）</span><b id="ncFuel"></b></div>
     <div class="nc-row"><span>手动点火</span><b id="ncManual"></b></div>
     <div class="row nc-burn">
       <select id="ncBurnDir">
@@ -383,6 +385,12 @@ export function buildNavConsole(world: World): () => void {
         : '—',
     );
     set('ncDvUsed', st.tcmCount ? `${st.tcmUsedKms.toFixed(3)} km/s · ${st.tcmCount} 次` : '未修正');
+    set(
+      'ncFuel',
+      ISP_PRESETS.map(
+        (p) => `${p.label} ${(propellantFraction(st.dvTotal, p.ispS) * 100).toFixed(0)}%`,
+      ).join(' · ') + `（Δv ${st.dvTotal.toFixed(2)} km/s，不含结构质量）`,
+    );
     set(
       'ncManual',
       st.manualCount

@@ -1,6 +1,7 @@
 import { PLANETS } from '../data/bodies';
 import { bodyEphemeris } from '../nav/ephemeris';
 import { TRACKING_TIERS, type TrackingTier } from '../nav/navigator';
+import { massRatio } from '../nav/maneuvers';
 import { bestTransfer, type TransferPlan } from '../nav/plan';
 import type { World } from '../scene/world';
 

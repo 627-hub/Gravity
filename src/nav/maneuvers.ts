@@ -90,3 +90,27 @@ export function parkingOrbitDeltaV(rPark: number, vInfKms: number, muPlanetKms: 
   const vCirc = Math.sqrt(muPlanetKms / rPark);
   return vPeri - vCirc;
 }
+
+/** 标准重力加速度，m/s²。 */
+const G0 = 9.80665;
+
+/** 常用推进系统的比冲（s）。 */
+export const ISP_PRESETS = [
+  { id: 'chemical', label: '化学', ispS: 450 },
+  { id: 'nuclear', label: '核热', ispS: 900 },
+  { id: 'electric', label: '电推', ispS: 3000 },
+] as const;
+
+/**
+ * 齐奥尔科夫斯基质量比 m0/mf = exp(Δv / (Isp·g0)) 与推进剂质量分数
+ * 1 − mf/m0。**燃料不是和 Δv 成正比的**：Δv 越大，所需质量比指数增长，
+ * 这正是"省 Δv"在化学推进下等于"省燃料"（但降幅被指数放大）的原因。
+ * 单级、不含结构质量与重力损失。
+ */
+export function massRatio(dvKms: number, ispS: number): number {
+  return Math.exp(dvKms / ((ispS * G0) / 1000));
+}
+
+export function propellantFraction(dvKms: number, ispS: number): number {
+  return 1 - 1 / massRatio(dvKms, ispS);
+}
