@@ -22,14 +22,14 @@ import { Mission as FlightMission } from '../nav/mission';
 import type { TrackingTier } from '../nav/navigator';
 import { P_SRP_1AU } from '../nav/perturbations';
 import { DEFAULT_SRP } from '../nav/truth';
+import type { ThrustDir } from '../nav/propulsion';
 import { AUDAY_TO_KMS, fromKms, MU_SUN, toKms } from '../nav/units';
 import { elementsFromState, type ClassicalElements } from '../nav/elements';
 import { makeForceModel, type AccelFn, type GravitySource } from '../nav/perturbations';
 import { Adcs, DEFAULT_ADCS } from '../nav/attitude';
 
-/** 手动点火方向（相对飞船当前的真值状态）。 */
-export type ManualBurnDir =
-  | 'prograde' | 'retrograde' | 'radialOut' | 'radialIn' | 'normal' | 'antiNormal';
+/** 手动点火方向（= 推力方向）。 */
+export type ManualBurnDir = ThrustDir;
 import type { Spaceport } from '../nav/spaceport';
 import { solarSystemSources } from '../nav/sources';
 import type { TransferPlan } from '../nav/plan';
@@ -197,6 +197,13 @@ export interface MissionStatus {
   tcmUsedKms: number;
   manualCount: number;
   manualUsedKms: number;
+  /** 推进系统与油门读数。 */
+  driveLabel: string;
+  massKg: number;
+  propellantKg: number;
+  thrustMms2: number;
+  thrustActive: boolean;
+  throttleLevel: number;
   /** L1 readout: null when flying without tracking (truth navigation). */
   trackingLabel: string | null;
   trackCount: number;
@@ -735,6 +742,15 @@ export class World {
     return this.mission.applyManualBurn(this.simDays, axis.multiplyScalar(fromKms(dvKms)));
   }
 
+  /**
+   * 油门：设定推进系统与连续推力（level 0..1，dir = 推力方向）。
+   * 与脉冲式手动点火互补——化学/核热用脉冲，核电这类低推力靠持续点火。
+   */
+  setThrottle(level: number, dir: ThrustDir, driveId: string): void {
+    if (!this.mission) return;
+    this.mission.setThrottle(this.simDays, driveId, Math.min(1, Math.max(0, level)), dir);
+  }
+
   /** Remove the spacecraft and its trajectory. */
   clearMission(): void {
     this.mission = null;
@@ -946,6 +962,12 @@ export class World {
       tcmUsedKms: m.tcmUsedKms,
       manualCount: m.manualCount,
       manualUsedKms: m.manualUsedKms,
+      driveLabel: m.throttleState()?.drive.label ?? '化学',
+      massKg: m.massKg(this.simDays),
+      propellantKg: m.massKg(this.simDays) - 900,
+      thrustMms2: m.thrustAccelMps2(this.simDays) * 1000,
+      thrustActive: m.throttleState()?.active ?? false,
+      throttleLevel: m.throttleState()?.level ?? 0,
       trackingLabel: this.missionTrackingLabel,
       trackCount: m.trackingCount,
       estErrorKm: m.hasTracking ? (m.estimateError(this.simDays) * AU) / 1000 : 0,

@@ -1,6 +1,6 @@
 import type { StateVector } from '../physics/state';
 import { hermiteState } from './analysis';
-import { integrate, type TrajectoryPoint } from './integrate';
+import { integrate, type ThrustModel, type TrajectoryPoint } from './integrate';
 import { makeForceModel, type SrpParams } from './perturbations';
 import { bodyRadiusKm, solarSystemSources } from './sources';
 import { GravitySource } from './perturbations';
@@ -30,6 +30,10 @@ export function truthSoftening(src: GravitySource): number {
 }
 
 export interface TruthOptions {
+  /** 飞船初始质量（kg），配合推力使用。 */
+  mass0Kg?: number;
+  /** 连续推力（含质量流）。 */
+  thrust?: ThrustModel;
   /** Include solar radiation pressure (on by default). */
   srp?: boolean;
   /**
@@ -61,12 +65,23 @@ export class TruthTrajectory {
       maxStep: 2,
       rtol: 1e-10,
       atol: 1e-12,
+      thrust: opts.thrust,
     });
   }
 
   /** Integrator samples (t, pos, vel) — also usable as a display path. */
   get path(): TrajectoryPoint[] {
     return this.samples;
+  }
+
+  /** 质量（kg）在该时刻的采样值（启用推力时）。 */
+  massKgAt(t: number): number | null {
+    let best: TrajectoryPoint | null = null;
+    for (const p of this.samples) {
+      if (p.massKg === undefined) return null;
+      if (best === null || Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
+    }
+    return best ? best.massKg! : null;
   }
 
   /** Truth state at `t` within [startDay, endDay] (Hermite interpolation). */

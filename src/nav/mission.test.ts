@@ -163,6 +163,31 @@ describe('mission with TCM corrections', () => {
     expect(m.applyManualBurn(plan.arrivalDay, fwd)).toBeNull();
   });
 
+  it('连续推力油门：真值轨迹被改变、质量按质量流下降、关机后停止消耗', () => {
+    const m = new Mission(plan, { injectError: false });
+    const t = plan.departureDay + plan.tof * 0.3;
+    const m0 = m.massKg(t);
+    expect(m0).toBeCloseTo(1500, 6); // 干重 900 + 推进剂 600
+
+    m.setThrottle(t, 'nep', 1, 'prograde');
+    expect(m.throttleState()?.active).toBe(true);
+    expect(m.thrustAccelMps2(t)).toBeGreaterThan(0);
+    // 核电推进的加速度量级：~10^-4 m/s²（这就是"低推力"的含义）
+    expect(m.thrustAccelMps2(t)).toBeLessThan(1e-3);
+
+    // 烧 60 天：质量下降，真值弹道被真实改变
+    const t2 = t + 60;
+    const m1 = m.massKg(t2);
+    expect(m1).toBeLessThan(m0 - 50);
+    expect(km(m.truthMissDistance())).toBeGreaterThan(1e5);
+
+    // 关机后质量冻结在关机票面
+    m.setThrottle(t2, 'nep', 0, 'prograde');
+    expect(m.throttleState()).toBeNull();
+    expect(m.massKg(t2 + 30)).toBeCloseTo(m1, 6);
+    expect(m.throttleBurns).toBe(1);
+  });
+
   it('supports multiple corrections and refuses past arrival', () => {
     const m = new Mission(plan, { injectError: true, physics: 'two-body' });
     const t1 = plan.departureDay + plan.tof * 0.3;

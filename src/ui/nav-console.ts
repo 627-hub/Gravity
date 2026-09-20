@@ -2,6 +2,7 @@ import { PLANETS } from '../data/bodies';
 import { DRIVES, burnDays, propellantFractionVe, thrustRegime } from '../nav/propulsion';
 import type { Spaceport } from '../nav/spaceport';
 import type { ManualBurnDir, NavSnapshot, PointingReading, World } from '../scene/world';
+import type { ThrustDir } from '../nav/propulsion';
 
 // Spacecraft flight-deck console: an attitude/pointing indicator (where the
 // Sun, Earth, the target and the gravity vector sit relative to the nose),
@@ -78,6 +79,27 @@ export function buildNavConsole(world: World): () => void {
     <div class="nc-row"><span>修正已用</span><b id="ncDvUsed"></b></div>
     <div class="nc-row"><span>地表↔港（另案系统）</span><b id="ncSurf"></b></div>
     <div class="nc-row"><span>燃料（单级）</span><b id="ncFuel"></b></div>
+    <div class="nc-row"><span>推进 / 质量</span><b id="ncDrive"></b></div>
+    <div class="row nc-burn">
+      <select id="ncDriveSel">
+        <option value="chemical">化学</option>
+        <option value="nuclear">核热</option>
+        <option value="nep">核电推进</option>
+        <option value="fusion">聚变</option>
+        <option value="sail">光帆/束能</option>
+      </select>
+      <input type="number" id="ncThrottle" value="100" min="0" max="100" step="10" title="油门 %" />
+      <select id="ncThrustDir">
+        <option value="prograde">顺行</option>
+        <option value="retrograde">逆行</option>
+        <option value="radialOut">径向外</option>
+        <option value="radialIn">径向内</option>
+        <option value="normal">法向</option>
+        <option value="antiNormal">反法向</option>
+      </select>
+      <button id="ncBurnOn">点火</button>
+      <button id="ncBurnOff">关机</button>
+    </div>
     <div class="nc-row"><span>手动点火</span><b id="ncManual"></b></div>
     <div class="row nc-burn">
       <select id="ncBurnDir">
@@ -124,6 +146,18 @@ export function buildNavConsole(world: World): () => void {
   (root.querySelector('#ncFollow') as HTMLButtonElement).addEventListener('click', () => {
     world.followCraft();
   });
+
+  // Throttle: continuous thrust with mass flow (low-thrust drives live here).
+  const driveSel = root.querySelector('#ncDriveSel') as HTMLSelectElement;
+  const throttleIn = root.querySelector('#ncThrottle') as HTMLInputElement;
+  const thrustDirSel = root.querySelector('#ncThrustDir') as HTMLSelectElement;
+  const burnOn = root.querySelector('#ncBurnOn') as HTMLButtonElement;
+  const burnOff = root.querySelector('#ncBurnOff') as HTMLButtonElement;
+  burnOn.addEventListener('click', () => {
+    const level = Math.min(100, Math.max(0, Number(throttleIn.value))) / 100;
+    world.setThrottle(level, thrustDirSel.value as ThrustDir, driveSel.value);
+  });
+  burnOff.addEventListener('click', () => world.setThrottle(0, thrustDirSel.value as ThrustDir, driveSel.value));
 
   // Manual burn: fly the ship by hand (Δv along a chosen body-frame direction).
   const burnDir = root.querySelector('#ncBurnDir') as HTMLSelectElement;
@@ -403,6 +437,14 @@ export function buildNavConsole(world: World): () => void {
         : '—（驾驶台右侧可手动点火）',
     );
     burnGo.disabled = snap.phase === 'arrived';
+    set(
+      'ncDrive',
+      `${st.driveLabel} · 质量 ${st.massKg.toFixed(0)} kg（推进剂 ${st.propellantKg.toFixed(0)}）`
+        + ` · 推力加速度 ${st.thrustMms2.toFixed(3)} mm/s²`
+        + (st.thrustActive ? ' · 点火中' : ' · 关机'),
+    );
+    burnOn.disabled = snap.phase === 'arrived' || st.propellantKg <= 1;
+    burnOff.disabled = !st.thrustActive;
 
     bar.style.width = `${(snap.progress * 100).toFixed(1)}%`;
     const tRel = Math.round(snap.simDays - snap.departureDay);

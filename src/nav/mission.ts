@@ -11,6 +11,7 @@ import {
 } from './navigator';
 import type { TransferPlan } from './plan';
 import { makeForceModel, type AccelFn, type GravitySource } from './perturbations';
+import { DRIVES, massRatioVe, thrustDirection, type Drive, type ThrustDir } from './propulsion';
 import { propagate } from './propagate';
 import { solarSystemSources } from './sources';
 import { DEFAULT_SRP, TruthTrajectory, truthSoftening } from './truth';
@@ -94,6 +95,10 @@ const P0_VEL_AUDAY = 0.05;
  */
 const ONBOARD_SRP_CR_FACTOR = 1.1;
 
+/** 飞船质量模型：干重 + 初始推进剂。 */
+export const DRY_MASS_KG = 900;
+export const PROPELLANT_KG0 = 600;
+
 /** 终端瞄准的迭代容差（1e-8 AU ≈ 1.5 km，受积分器精度限制）。 */
 const AIM_TOL_AU = 1e-8;
 /** 单步最大修正量（AU/day，≈1.7 km/s）；超过说明在发散。 */
@@ -128,6 +133,8 @@ export class Mission {
   /** 手动点火次数与累计 Δv（km/s）。 */
   manualCount = 0;
   manualUsedKms = 0;
+  /** 连续推力点火次数。 */
+  throttleBurns = 0;
 
   private injectError: boolean;
   private truthPhysics: 'two-body' | 'n-body';
@@ -148,6 +155,11 @@ export class Mission {
   private lastOpticalMeas: OpticalMeasurement | null = null;
   /** 船载加速度模型（太阳 + 出发/目标天体 + SRP）与其推进器。 */
   private onboardAccel: AccelFn;
+  /** 推进系统与油门：当前点火指令（null = 关机）。 */
+  private drive: Drive;
+  private throttle: { dir: ThrustDir; level: number; startDay: number; mass0Kg: number } | null = null;
+  /** 累计消耗的推进剂（kg）——关机后也要记住。 */
+  private burnedKg = 0;
 
   constructor(plan: TransferPlan, opts: MissionOptions = {}) {
     this.plan = plan;
@@ -160,6 +172,7 @@ export class Mission {
     this.beacon = target ? bodyEphemeris(target) : null;
     if (opts.tracking) this.trackNoise = tierNoise(opts.tracking);
     this.rng = mulberry32(Math.floor(plan.departureDay * 7919 + plan.targetId.length * 104729));
+    this.drive = DRIVES.find((d) => d.id === 'chemical')!;
     // 船载力模型。n-body 模式：太阳 + 出发/目标天体 + 太阳光压（Cr 有 10% 先验
     // 偏差）——目标引力进模型后，终端瞄准才不再像纯二体那样差出 1e5 km；出发
     // 天体也必须进来，因为飞船此刻就在它的引力井里点火逃逸。
@@ -191,6 +204,9 @@ export class Mission {
     this.tcmUsedKms = 0;
     this.manualCount = 0;
     this.manualUsedKms = 0;
+    this.burnedKg = 0;
+    this.throttle = null;
+    this.throttleBurns = 0;
     this.lastDay = -Infinity;
     this.nextTrackDay = this.plan.departureDay;
     this.nextSampleDay = this.plan.departureDay;
@@ -239,6 +255,7 @@ export class Mission {
       this.trajectories.push(
         new TruthTrajectory(first.state, first.startDay, first.endDay, {
           srp: this.srp,
+          mass0Kg: DRY_MASS_KG + PROPELLANT_KG0,
         }),
       );
     }
@@ -246,12 +263,111 @@ export class Mission {
     this.lastPredictDay = -Infinity;
   }
 
+  /** 当前质量（kg）：干重 + 剩余推进剂（含本次点火已烧掉的量）。 */
+  massKg(t: number): number {
+    const burning = this.throttleRateKgPerDay();
+    const dt = this.throttle ? Math.max(0, t - this.throttle.startDay) : 0;
+    const soFar = Math.min(PROPELLANT_KG0 - this.burnedKg, burning * dt);
+    return DRY_MASS_KG + PROPELLANT_KG0 - this.burnedKg - soFar;
+  }
+
+  /** 把当前点火烧掉的推进剂结转到累计账上（改指令/关机时调用）。 */
+  private commitBurn(upToDay: number): void {
+    if (!this.throttle) return;
+    const rate = this.throttleRateKgPerDay();
+    const dt = Math.max(0, upToDay - this.throttle.startDay);
+    this.burnedKg = Math.min(PROPELLANT_KG0, this.burnedKg + rate * dt);
+  }
+
+  /** 当前油门指令（UI 读数用）。 */
+  throttleState(): { dir: ThrustDir; level: number; active: boolean; drive: Drive } | null {
+    if (!this.throttle) return null;
+    return {
+      dir: this.throttle.dir,
+      level: this.throttle.level,
+      active: this.throttle.level > 0 && this.massKg(this.lastDay) > DRY_MASS_KG + 1e-9,
+      drive: this.drive,
+    };
+  }
+
+  private throttleRateKgPerDay(): number {
+    const f = this.drive.exhaustKms;
+    if (!Number.isFinite(f) || !this.throttle || this.throttle.level <= 0) return 0;
+    const thrustN = this.throttle.level * this.maxThrustN();
+    return (thrustN / (f * 1000)) * 86400;
+  }
+
+  /** 满油门推力（N）：按给定加速度量级与初始质量定义。 */
+  private maxThrustN(): number {
+    return this.drive.accelMps2 * (DRY_MASS_KG + PROPELLANT_KG0);
+  }
+
+  /** 当前推力加速度（m/s²）与 T/W 比值。 */
+  thrustAccelMps2(t: number): number {
+    if (!this.throttle || this.throttle.level <= 0) return 0;
+    const m = this.massKg(t);
+    if (m <= DRY_MASS_KG + 1e-9) return 0;
+    return (this.throttle.level * this.maxThrustN()) / m;
+  }
+
+  /**
+   * 设定油门：把连续推力写进真值轨迹（新开一段带 ThrustModel 的积分）。
+   * level = 0 关机；dir 为推力方向（顺行/逆行/径向/法向）。
+   */
+  setThrottle(t: number, driveId: string, level: number, dir: ThrustDir): void {
+    const drive = DRIVES.find((d) => d.id === driveId) ?? this.drive;
+    this.commitBurn(t);
+    this.drive = drive;
+    const mass0Kg = this.massKg(t);
+    const wasBurning = this.throttle !== null && this.throttle.level > 0;
+    this.throttle = level > 0 ? { dir, level, startDay: t, mass0Kg } : null;
+    if (!this.truthPhysics || !this.plan) return;
+    // 新开一段真值轨迹（含推力 + 质量流）
+    this.updateFlown(t);
+    const truth = this.stateAt(t);
+    this.segments.push({ state: { pos: truth.pos.clone(), vel: truth.vel.clone() }, startDay: t, endDay: this.plan.arrivalDay });
+    if (this.truthPhysics === 'n-body') {
+      this.trajectories.push(
+        new TruthTrajectory({ pos: truth.pos.clone(), vel: truth.vel.clone() }, t, this.plan.arrivalDay, {
+          srp: this.srp,
+          mass0Kg: mass0Kg,
+          thrust: level > 0
+            ? {
+                direction: (pos, vel, out) => thrustDirection(dir, pos, vel, out),
+                thrustN: level * this.maxThrustN(),
+                exhaustKms: drive.exhaustKms,
+                mass0Kg,
+                dryMassKg: DRY_MASS_KG,
+              }
+            : undefined,
+        }),
+      );
+    }
+    if (wasBurning !== (level > 0)) this.throttleBurns += level > 0 ? 1 : 0;
+    this.refreshPrediction(t);
+  }
+
   /** 船载模型推进（n-body 模式含出发/目标引力与 SRP；二体模式即太阳二体）。 */
   private advanceOnboard(state: StateVector, t0: number, dt: number): StateVector {
+    // 推力是**指令**，船载系统当然知道：把它一并放进滤波器模型，
+    // 否则连续点火期间估计会被当成模型误差而跑飞。
+    const burning = this.throttle !== null && this.throttle.level > 0
+      && this.massKg(t0) > DRY_MASS_KG + 1e-9;
+    const thrust = burning
+      ? {
+          direction: (pos: Vector3, vel: Vector3, out: Vector3) =>
+            thrustDirection(this.throttle!.dir, pos, vel, out),
+          thrustN: this.throttle!.level * this.maxThrustN(),
+          exhaustKms: this.drive.exhaustKms,
+          mass0Kg: this.massKg(t0),
+          dryMassKg: DRY_MASS_KG,
+        }
+      : undefined;
     const pts = integrate(state, t0, dt, this.onboardAccel, {
       maxStep: this.truthPhysics === 'n-body' ? 1.5 : 5,
       rtol: 1e-9,
       atol: 1e-11,
+      thrust,
     });
     const last = pts[pts.length - 1];
     return { pos: last.pos.clone(), vel: last.vel.clone() };

@@ -1,6 +1,30 @@
 import { Vector3 } from 'three';
+import { AU, DAY } from '../data/constants';
 import type { StateVector } from '../physics/state';
 import type { AccelFn } from './perturbations';
+
+/**
+ * 连续推力（含质量流）。推力恒定、推进剂按 ṁ = F/v_e 消耗，所以飞船质量随
+ * 时间线性下降、加速度随之上升：a(t) = F / (m0 − ṁ·t)。这正是火箭方程
+ * 在连续工作下的样子，也是"电推螺旋"必须按连续推力积分而不是脉冲近似的原因。
+ */
+export interface ThrustModel {
+  /** 推力方向（单位矢量，日心黄道系），由当前状态决定（如顺行 = v̂）。 */
+  direction: (pos: Vector3, vel: Vector3, out: Vector3) => Vector3;
+  /** 推力，N。 */
+  thrustN: number;
+  /** 排气速度 v_e = Isp·g0，km/s。 */
+  exhaustKms: number;
+  /** 点火开始时的质量，kg。 */
+  mass0Kg: number;
+  /** 干重，kg（推进剂耗尽后不再减重）。 */
+  dryMassKg: number;
+}
+
+/** 恒定推力下的质量流，kg/天。 */
+export function massFlowKgPerDay(thrustN: number, exhaustKms: number): number {
+  return (thrustN / (exhaustKms * 1000)) * DAY;
+}
 
 // Adaptive Dormand–Prince 5(4) integrator for spacecraft trajectories.
 // Fixed-step leapfrog (physics/nbody.ts) is fine for planets on well-behaved
@@ -35,12 +59,16 @@ export interface IntegrateOptions {
   initialStep?: number;
   /** Hard cap on accepted steps (default 200000, guards runaway runs). */
   maxSteps?: number;
+  /** 连续推力（含质量流）；缺省为无推力自由飞行。 */
+  thrust?: ThrustModel;
 }
 
 export interface TrajectoryPoint {
   t: number;
   pos: Vector3;
   vel: Vector3;
+  /** 该采样点的飞船质量，kg（启用推力时才有意义）。 */
+  massKg?: number;
 }
 
 /**
@@ -64,6 +92,15 @@ export function integrate(
   const tEnd = t0 + dt;
   const maxStep = opts.maxStep ?? Math.abs(dt);
 
+  const thrust = opts.thrust;
+  const mdot = thrust ? massFlowKgPerDay(thrust.thrustN, thrust.exhaustKms) : 0;
+  const massAt = (tt: number): number => {
+    if (!thrust) return 0;
+    return Math.max(thrust.dryMassKg, thrust.mass0Kg - mdot * (tt - t0));
+  };
+  const thrustAccelAUday = thrust ? (thrust.thrustN * DAY * DAY) / AU : 0;
+  const tDir = new Vector3();
+
   const yPos = initial.pos.clone();
   const yVel = initial.vel.clone();
   const kPos: Vector3[] = Array.from({ length: 7 }, () => new Vector3());
@@ -77,16 +114,29 @@ export function integrate(
   h = Math.min(h, maxStep) * dir;
 
   let t = t0;
-  const points: TrajectoryPoint[] = [{ t, pos: yPos.clone(), vel: yVel.clone() }];
+  const points: TrajectoryPoint[] = [
+    { t, pos: yPos.clone(), vel: yVel.clone(), massKg: thrust ? massAt(t) : undefined },
+  ];
 
   for (let step = 0; step < maxSteps; step++) {
     const remaining = tEnd - t;
     if (Math.abs(h) > Math.abs(remaining)) h = remaining;
     if (Math.abs(h) < minStep) h = Math.min(minStep, Math.abs(remaining)) * dir;
 
+    // 连续推力项：与引力叠加。质量随点火线性下降，所以同一推力下加速度
+    // 会越来越大（也正因如此不能把它当脉冲处理）。
+    const addThrust = (tt: number, pos: Vector3, vel: Vector3, out: Vector3): void => {
+      if (!thrust || mdot <= 0) return;
+      const m = massAt(tt);
+      if (m <= thrust.dryMassKg + 1e-9) return; // 推进剂耗尽
+      thrust.direction(pos, vel, tDir);
+      out.addScaledVector(tDir, thrustAccelAUday / m);
+    };
+
     // Dormand–Prince stages.
     kPos[0].copy(yVel);
     accel(t, yPos, kVel[0]);
+    addThrust(t, yPos, yVel, kVel[0]);
     for (let i = 1; i < 7; i++) {
       tmpPos.copy(yPos);
       tmpVel.copy(yVel);
@@ -96,6 +146,7 @@ export function integrate(
       }
       kPos[i].copy(tmpVel);
       accel(t + C[i] * h, tmpPos, kVel[i]);
+      addThrust(t + C[i] * h, tmpPos, tmpVel, kVel[i]);
     }
 
     newPos.copy(yPos);
@@ -125,7 +176,7 @@ export function integrate(
       t += h;
       yPos.copy(newPos);
       yVel.copy(newVel);
-      points.push({ t, pos: yPos.clone(), vel: yVel.clone() });
+      points.push({ t, pos: yPos.clone(), vel: yVel.clone(), massKg: thrust ? massAt(t) : undefined });
       if (Math.abs(t - tEnd) < 1e-12 * Math.max(1, Math.abs(tEnd))) break;
     }
 

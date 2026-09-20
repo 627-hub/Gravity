@@ -1,3 +1,5 @@
+import { Vector3 } from 'three';
+
 // 推进系统：把 Δv 换算成"能不能做到"。
 //
 // 火箭方程的暴政：为了推动推进剂本身，需要的推进剂按 **指数** 增长，
@@ -12,6 +14,25 @@
 //
 // 另一个硬约束是功率：P_jet = F·v_e/2。高 v_e 意味着同样推力要天文数字的功率，
 // 而电推的电站+散热器质量往往比推进剂还重。这是"核能/电推"路线真正的墙。
+
+/** 推力/点火方向（相对飞船当前状态）。 */
+export type ThrustDir =
+  | 'prograde' | 'retrograde' | 'radialOut' | 'radialIn' | 'normal' | 'antiNormal';
+
+/** 由状态解出方向单位矢量（日心黄道系）。 */
+export function thrustDirection(
+  dir: ThrustDir,
+  pos: Vector3,
+  vel: Vector3,
+  out: Vector3 = new Vector3(),
+): Vector3 {
+  if (dir === 'prograde') return out.copy(vel).normalize();
+  if (dir === 'retrograde') return out.copy(vel).normalize().negate();
+  if (dir === 'radialOut') return out.copy(pos).normalize();
+  if (dir === 'radialIn') return out.copy(pos).normalize().negate();
+  const h = new Vector3().crossVectors(pos, vel).normalize();
+  return dir === 'normal' ? out.copy(h) : out.copy(h).negate();
+}
 
 export interface Drive {
   id: string;
