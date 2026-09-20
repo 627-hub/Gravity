@@ -11,16 +11,22 @@ import {
 import type { TransferPlan } from './plan';
 import { propagate } from './propagate';
 import { TruthTrajectory } from './truth';
-import { MPS_TO_AUDAY, MU_SUN, toKms } from './units';
+import { fromKms, MPS_TO_AUDAY, MU_SUN, toKms } from './units';
 
 // A flown mission: the planned Lambert arc plus execution errors, noisy
 // tracking and TCM (trajectory correction manoeuvre) history.
 //
 // TRUTH physics default to N-BODY: the trajectory is integrated in the full
-// force field (Sun + planets + moons + SRP, patched-conic exclusions for the
-// departure/arrival body), while the onboard computer keeps its two-body
-// model. The difference is genuine model error — the L2 problem the filter
-// and the TCMs must live with. 'two-body' recovers the classic exact arcs.
+// force field (Sun + planets + moons + SRP), while the onboard computer keeps
+// its two-body model. The difference is genuine model error — the L2 problem
+// the filter and the TCMs must live with. 'two-body' recovers the classic
+// exact arcs.
+//
+// The mission now starts and ends at a **synchronous-orbit spaceport**, not at
+// a body centre: the initial state is the post-escape-burn state in the port
+// orbit, so the departure/arrival bodies must stay in the force model (their
+// gravity bends the escape hyperbola and the capture). Surface ↔ port traffic
+// is a different vehicle and is not modelled here.
 //
 // Two state tracks live here:
 //   - the TRUTH state (what actually happens), propagated between burns;
@@ -45,7 +51,7 @@ export interface TcmSolution {
   state: StateVector;
 }
 
-/** Launch dispersion injected for demonstration: 0.25% of the velocity. */
+/** 离港点火执行误差（演示用）：逃逸点火量的 0.25%——误差源是发动机，不是日心速度。 */
 export const LAUNCH_ERROR_FRACTION = 0.0025;
 
 /** Tracking cadence, days between ground-station passes. */
@@ -143,12 +149,23 @@ export class Mission {
         )
       : null;
 
-    const v = this.plan.v1.clone();
+    // n-body 真值从太空港点火后的逃逸状态出发（行星引力参与，逃逸双曲线是真的）。
+    // 二体模式是经典的 patched-conic 理想化：日心弧从港口位置以转移速度出发，
+    // 逃逸/捕获被当作瞬时——所以它必须走 Lambert 端点，否则会带着"未爬出行星
+    // 引力井"的 2.3 km/s 在日心系里飞错轨道。两条口径都从太空港端点起步。
+    const start =
+      this.truthPhysics === 'n-body' && this.plan.departureState
+        ? this.plan.departureState
+        : { pos: this.plan.r1.clone(), vel: this.plan.v1.clone() };
+    const v = start.vel.clone();
     if (this.injectError) {
-      v.addScaledVector(this.launchErrorDir(), v.length() * LAUNCH_ERROR_FRACTION);
+      const burnAuday = this.plan.burnDepart
+        ? fromKms(this.plan.burnDepart.dvKms)
+        : v.length();
+      v.addScaledVector(this.launchErrorDir(), burnAuday * LAUNCH_ERROR_FRACTION);
     }
     const first: FlightSegment = {
-      state: { pos: this.plan.r1.clone(), vel: v },
+      state: { pos: start.pos.clone(), vel: v },
       startDay: this.plan.departureDay,
       endDay: this.plan.arrivalDay,
     };
@@ -158,7 +175,6 @@ export class Mission {
       this.trajectories.push(
         new TruthTrajectory(first.state, first.startDay, first.endDay, {
           srp: this.srp,
-          exclude: [this.plan.departureId, this.plan.targetId],
         }),
       );
     }
@@ -348,7 +364,6 @@ export class Mission {
       this.trajectories.push(
         new TruthTrajectory(truthAfter, t, this.plan.arrivalDay, {
           srp: this.srp,
-          exclude: [this.plan.departureId, this.plan.targetId],
         }),
       );
     }
@@ -364,8 +379,9 @@ export class Mission {
     const end = Math.min(t, this.plan.arrivalDay);
     if (end < this.plan.departureDay) return;
     while (this.nextSampleDay <= end) {
-      const seg = this.segmentFor(this.nextSampleDay);
-      this.flown.push(propagate(seg.state, this.nextSampleDay - seg.startDay, MU_SUN).pos);
+      // 采样真值（Hermite 插值）而不是二体推算：离港/入泊段是真值引力主导的
+      // 双曲线，二体外推在那里完全不对，画出来的航迹会与飞船实际位置分家。
+      this.flown.push(this.stateAt(this.nextSampleDay).pos.clone());
       this.nextSampleDay += this.sampleStep;
     }
   }

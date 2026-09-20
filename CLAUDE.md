@@ -42,7 +42,10 @@ src/
                gravity sources, SOI radii), integrate.ts (adaptive DOPRI5),
                analysis.ts (closest approach, impact events),
                flyby.ts (B-plane gravity assists), targeting.ts (shoot a flyby to hit a target),
-               plan.ts (bestTransfer: cheapest window on a rolling horizon),
+               plan.ts (bestTransfer: cheapest window; endpoints are spaceports),
+               spaceport.ts (synchronous-orbit spaceports: r = (mu T^2/4pi^2)^(1/3),
+               parking-orbit fallback for slow/retrograde/locked bodies, and the
+               single-impulse escape/capture burn model with plane change),
                mission.ts (flown mission: dispersion, TCM re-solves, flown path),
                navigator.ts (L1 tracking: square-root EKF on range/range-rate + optical),
                truth.ts (n-body truth trajectory: full force field + SRP, Hermite sampling),
@@ -84,6 +87,24 @@ Existing modes: `normal`, `inertia`, `accretion`, `helix`, `orbit-intro`,
 `rocket`, `soi` (spheres of influence), `flyby` (Voyager gravity assists), and
 `spacetime` (Einstein's curved-spacetime grid). Camera moves via an eased
 `flyTo`; on the tour, releasing a drag springs the camera back to the framing.
+
+### Mission endpooints: spaceports, not body centres
+
+Missions launch from and arrive at a **spaceport in synchronous orbit** (for
+bodies where one exists — fast prograde rotators: Earth 42,164 km, Mars 20,428 km,
+Jupiter ~160,000 km) and fall back to a low **parking orbit** otherwise (Venus
+spins retrograde in 243 days; tidally-locked moons have their synchronous radius
+outside the Hill sphere). The Δv ledger is therefore: escape burn (port orbit →
+hyperbolic departure) + TCMs + capture burn (hyperbolic arrival → port orbit).
+Surface-to-port traffic is a **different vehicle** (aerodynamics, thermal, high
+thrust) and is deliberately not modelled — `Spaceport.surfaceAccessKms` gives the
+ideal-impulse reference only.
+
+The n-body truth integrates *with* the departure/arrival bodies in the force
+model (per-source softening = the body's radius): the escape and capture
+hyperbolas are real orbits about them. The onboard navigator stays two-body
+(Sun only), which is why the terminal approach has a ~10^5 km model floor — the
+onboard model does not know the target's gravity.
 
 ## Conventions
 

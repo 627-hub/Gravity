@@ -33,11 +33,18 @@ export const P_SRP_1AU = 4.56e-6;
  * position; SRP pushes radially away from the Sun (only if a Sun source is
  * present and `srp` is given).
  *
- * `softening` (AU, default 0) caps the force inside a body's radius: a
- * trajectory that starts exactly at a planet's centre (patched-conic style)
- * would otherwise blow up on the 1/r^2 singularity.
+ * `softening` (AU, default 0) caps the force inside a body's radius. A single
+ * number applies to every source; a function lets each body be softened at its
+ * own scale — needed once the departure/arrival body stays in the force model
+ * (the spacecraft now starts in a bound orbit around it, not at its centre).
  */
-export function makeForceModel(sources: GravitySource[], srp?: SrpParams, softening = 0): AccelFn {
+export type Softening = number | ((src: GravitySource) => number);
+
+export function makeForceModel(
+  sources: GravitySource[],
+  srp?: SrpParams,
+  softening: Softening = 0,
+): AccelFn {
   const sun = sources.find((s) => s.id === 'sun');
   // (m/s^2) -> (AU/day^2) for a unit 1/r^2 factor.
   const srpFactor = srp
@@ -45,12 +52,16 @@ export function makeForceModel(sources: GravitySource[], srp?: SrpParams, soften
     : 0;
 
   const d = new Vector3();
-  const soft2 = softening * softening;
+  const soft2 = sources.map((s) => {
+    const e = typeof softening === 'function' ? softening(s) : softening;
+    return e * e;
+  });
   return (t: number, pos: Vector3, out: Vector3): Vector3 => {
     out.set(0, 0, 0);
-    for (const s of sources) {
+    for (let i = 0; i < sources.length; i++) {
+      const s = sources[i];
       d.copy(s.positionAt(t)).sub(pos);
-      const r2 = d.lengthSq() + soft2;
+      const r2 = d.lengthSq() + soft2[i];
       const invR3 = 1 / (r2 * Math.sqrt(r2));
       out.addScaledVector(d, s.mu * invR3);
     }

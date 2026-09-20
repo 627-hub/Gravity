@@ -1,4 +1,5 @@
 import { PLANETS } from '../data/bodies';
+import type { Spaceport } from '../nav/spaceport';
 import type { NavSnapshot, PointingReading, World } from '../scene/world';
 
 // Spacecraft flight-deck console: an attitude/pointing indicator (where the
@@ -13,7 +14,7 @@ const MAP_W = 240;
 const MAP_H = 136;
 
 const phaseLabel = (phase: NavSnapshot['phase']): string =>
-  phase === 'docked' ? '待发' : phase === 'cruise' ? '巡航中' : '已抵达';
+  phase === 'docked' ? '港内待发' : phase === 'cruise' ? '巡航中' : '已入泊';
 
 const fmtDate = (days: number): string =>
   new Date(Date.UTC(2000, 0, 1, 12) + days * 86400000).toISOString().slice(0, 10);
@@ -68,9 +69,12 @@ export function buildNavConsole(world: World): () => void {
     <div class="nc-row"><span>估计误差 / σ</span><b id="ncErr"></b></div>
     <div class="nc-row"><span>跟踪</span><b id="ncTrk"></b></div>
     <div class="nc-row"><span>真实漏距 / 船载预期</span><b id="ncMiss"></b></div>
-    <div class="nc-sec">Δv 预算</div>
-    <div class="nc-row"><span>计划（出发 + 抵达）</span><b id="ncDvPlan"></b></div>
+    <div class="nc-sec">太空港 · Δv 预算</div>
+    <div class="nc-row"><span>出发港</span><b id="ncPortA"></b></div>
+    <div class="nc-row"><span>目标港</span><b id="ncPortB"></b></div>
+    <div class="nc-row"><span>离港逃逸 + 入泊捕获</span><b id="ncDvPlan"></b></div>
     <div class="nc-row"><span>修正已用</span><b id="ncDvUsed"></b></div>
+    <div class="nc-row"><span>地表↔港（另案系统）</span><b id="ncSurf"></b></div>
     <div class="nc-sec">日心航线</div>
     <canvas id="ncMap" width="${MAP_W}" height="${MAP_H}"></canvas>
     <div class="nc-legend">
@@ -331,7 +335,22 @@ export function buildNavConsole(world: World): () => void {
     set('ncTrk', hasTrack ? `${st.trackCount} 次 · ${st.trackingLabel}` : '无');
     set('ncMiss', `${fmtKm(st.missKm)} / ${fmtKm(st.estMissKm)}`);
 
-    set('ncDvPlan', `${st.dvDepart.toFixed(2)} + ${st.dvArrive.toFixed(2)} = ${st.dvTotal.toFixed(2)} km/s`);
+    const portInfo = (p: Spaceport | null, fallback: string): string =>
+      p
+        ? `${p.bodyName} · ${p.kind === 'synchronous' ? '同步轨道' : '停泊轨道'} ${Math.round(p.altitudeKm).toLocaleString()} km 高 · T=${p.periodDays.toFixed(2)} 天`
+        : fallback;
+    set('ncPortA', portInfo(st.departPort, '—（中心口径）'));
+    set('ncPortB', portInfo(st.arrivePort, '—（中心口径）'));
+    set(
+      'ncDvPlan',
+      `${st.dvDepart.toFixed(2)} + ${st.dvArrive.toFixed(2)} = ${st.dvTotal.toFixed(2)} km/s · v∞ ${st.vinfDepartKms.toFixed(2)}/${st.vinfArriveKms.toFixed(2)}`,
+    );
+    set(
+      'ncSurf',
+      st.departPort && st.arrivePort
+        ? `${st.departPort.surfaceAccessKms.toFixed(1)} / ${st.arrivePort.surfaceAccessKms.toFixed(1)} km/s（理想脉冲，不含大气损失；由穿梭机/电梯承担）`
+        : '—',
+    );
     set('ncDvUsed', st.tcmCount ? `${st.tcmUsedKms.toFixed(3)} km/s · ${st.tcmCount} 次` : '未修正');
 
     bar.style.width = `${(snap.progress * 100).toFixed(1)}%`;

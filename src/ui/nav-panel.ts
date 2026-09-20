@@ -127,8 +127,12 @@ export function buildNavPanel(world: World): () => void {
       try {
         plan = t;
           planText = `${from.name} → ${to.name} · ${dateFmt(t.departureDay)} 出发 · 航程 ${Math.round(t.tof)} 天`
-          + ` · ${dateFmt(t.arrivalDay)} 抵达 · Δv ${t.dvDepart.toFixed(2)} + ${t.dvArrive.toFixed(2)}`
-          + ` = ${t.dvTotal.toFixed(2)} km/s`;
+          + ` · ${dateFmt(t.arrivalDay)} 抵达 · 离港 ${t.dvDepart.toFixed(2)} + 入泊 ${t.dvArrive.toFixed(2)}`
+          + ` = ${t.dvTotal.toFixed(2)} km/s`
+          + (t.departPort
+            ? ` · 太空港 ${t.departPort.bodyName}/${t.arrivePort?.bodyName ?? '?'}`
+              + `（${t.departPort.kind === 'synchronous' ? '同步' : '停泊'}/${t.arrivePort?.kind === 'synchronous' ? '同步' : '停泊'}轨道）`
+            : '');
         launchBtn.disabled = false;
         const wait = t.departureDay - world.simDays;
         if (immediate) {
@@ -188,7 +192,10 @@ export function buildNavPanel(world: World): () => void {
         : st.phase === 'cruise'
           ? `巡航中 · ${Math.max(0, st.daysToArrival).toFixed(0)} 天后抵达`
           : '已抵达目标';
-      const text = `任务 ${name}：${phase} · 全程 ${Math.round(st.tof)} 天 · Δv ${st.dvTotal.toFixed(2)} km/s`;
+      const text = `任务 ${name}：${phase} · 全程 ${Math.round(st.tof)} 天 · 离港 ${st.dvDepart.toFixed(2)} + 入泊 ${st.dvArrive.toFixed(2)} = ${st.dvTotal.toFixed(2)} km/s`
+        + (st.arrivePort
+          ? ` · 目标港 ${Math.round(st.arrivePort.altitudeKm).toLocaleString()} km ${st.arrivePort.kind === 'synchronous' ? '同步' : '停泊'}轨道`
+          : '');
 
       const navLine = st.trackingLabel
         ? `导航（${st.trackingLabel}）：估计误差 ${fmtKm(st.estErrorKm)} · σ ±${fmtKm(st.posSigmaKm)} · 跟踪 ${st.trackCount} 次`

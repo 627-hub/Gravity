@@ -1,3 +1,4 @@
+import { PLANETS, SUN } from '../data/bodies';
 import { buildSimBodies, descriptorState } from '../data/system';
 import type { GravitySource } from './perturbations';
 import { muAuOfMass } from './units';
@@ -11,6 +12,17 @@ import { muAuOfMass } from './units';
  */
 export function soiRadius(a: number, primaryMu: number, secondaryMu: number): number {
   return a * Math.pow(secondaryMu / primaryMu, 2 / 5);
+}
+
+/** 天体半径（km，含月球）——真值积分按天体自身尺度做软化。 */
+export function bodyRadiusKm(id: string): number {
+  const planet = PLANETS.find((p) => p.id === id);
+  if (planet) return planet.radius;
+  for (const p of PLANETS) {
+    const moon = p.moons?.find((m) => m.id === id);
+    if (moon) return moon.radius;
+  }
+  return SUN.radius;
 }
 
 /**

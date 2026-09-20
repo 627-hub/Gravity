@@ -24,6 +24,7 @@ import { toKms } from '../nav/units';
 import { elementsFromState, type ClassicalElements } from '../nav/elements';
 import { makeForceModel, type AccelFn, type GravitySource } from '../nav/perturbations';
 import { Adcs, DEFAULT_ADCS } from '../nav/attitude';
+import type { Spaceport } from '../nav/spaceport';
 import { solarSystemSources } from '../nav/sources';
 import type { TransferPlan } from '../nav/plan';
 import {
@@ -193,6 +194,12 @@ export interface MissionStatus {
   dvDepart: number;
   dvArrive: number;
   dvTotal: number;
+  /** 双曲剩余速度 v∞（km/s）——渐近速度，不是点火量。 */
+  vinfDepartKms: number;
+  vinfArriveKms: number;
+  /** 出发/抵达太空港。 */
+  departPort: Spaceport | null;
+  arrivePort: Spaceport | null;
   daysToDeparture: number;
   daysToArrival: number;
   /** True separation from the rendezvous point at arrival, km. */
@@ -356,6 +363,9 @@ export class World {
   private soiMoonLabel!: CSS2DObject;
   private soiMoonAngle = 0;
   private readonly soiEarthPos = new Vector3(15, 0, 0); // Earth's place on its orbit
+  /** 太空港示意图（不是真实尺度）：同步/停泊轨道环 + 标签。 */
+  private portRings: { ring: Line; label: CSS2DObject }[] = [];
+  private readonly portTmp = new Vector3();
   // Gravity assist (Voyager 1 & 2): paths rebuilt in scene units at slide start.
   private voyagerLines: Line[] = [];
   private voyagerCraft: Group[] = [];
@@ -488,6 +498,7 @@ export class World {
     this.buildParallax();
     this.buildRocket();
     this.buildAstro();
+    this.buildPortRings();
     this.buildSpacetime();
     this.buildPrecession();
     this.buildNBody();
@@ -1210,6 +1221,57 @@ export class World {
     return s;
   }
 
+  /**
+   * 太空港示意环。真实同步轨道半径（地球 42,164 km）在行星尺度场景里远小于
+   * 被夸大的天体半径，画不出来 —— 这里按"1.7 × 天体显示半径"画一个示意环，
+   * 明确标注（示意），只表达"港口在天体周围而不是天体中心"这件事。
+   */
+  private buildPortRings(): void {
+    for (let i = 0; i < 2; i++) {
+      const pts: Vector3[] = [];
+      for (let k = 0; k <= 96; k++) {
+        const a = (2 * Math.PI * k) / 96;
+        pts.push(new Vector3(Math.cos(a), 0, Math.sin(a)));
+      }
+      const ring = new Line(
+        new BufferGeometry().setFromPoints(pts),
+        new LineBasicMaterial({ color: 0x6ee7ff, transparent: true, opacity: 0.55 }),
+      );
+      ring.visible = false;
+      ring.frustumCulled = false;
+      this.scene.add(ring);
+      const label = this.makeLabel('', 'vec-label');
+      label.visible = false;
+      this.portRings.push({ ring, label });
+    }
+  }
+
+  /** Place/refresh the two port rings for the current mission. */
+  private updatePortRings(): void {
+    const plan = this.mission?.plan;
+    const ids = [plan?.departureId, plan?.targetId];
+    const ports = [plan?.departPort, plan?.arrivePort];
+    for (let i = 0; i < this.portRings.length; i++) {
+      const { ring, label } = this.portRings[i];
+      const view = ids[i] ? this.views.find((x) => x.body.id === ids[i]) : undefined;
+      const port = ports[i];
+      if (!plan || !port || !view) {
+        ring.visible = false;
+        label.visible = false;
+        continue;
+      }
+      this.bodyScenePos(view.body.id, this.portTmp);
+      ring.position.copy(this.portTmp);
+      ring.scale.setScalar(Math.max(view.mesh.scale.x * 1.7, 0.12));
+      ring.visible = true;
+      label.position.copy(this.portTmp);
+      label.visible = true;
+      label.element.textContent =
+        `${i === 0 ? '出发港' : '目标港'} · ${port.kind === 'synchronous' ? '同步' : '停泊'}轨道`
+        + ` ${Math.round(port.altitudeKm).toLocaleString()} km（示意）`;
+    }
+  }
+
   /** Build the astrodynamics overlays (nested spheres of influence; Voyager paths). */
   private buildAstro(): void {
     // Spheres of influence: nested domains — the Sun's (vast), Earth's (on its
@@ -1745,6 +1807,10 @@ export class World {
   clearMission(): void {
     this.mission = null;
     this.navViz.clear();
+    for (const { ring, label } of this.portRings) {
+      ring.visible = false;
+      label.visible = false;
+    }
     if (this.followId === CRAFT_ID) this.followId = null;
   }
 
@@ -1927,6 +1993,10 @@ export class World {
       dvDepart: p.dvDepart,
       dvArrive: p.dvArrive,
       dvTotal: p.dvTotal,
+      vinfDepartKms: p.vinfDepartKms,
+      vinfArriveKms: p.vinfArriveKms,
+      departPort: p.departPort,
+      arrivePort: p.arrivePort,
       daysToDeparture: p.departureDay - this.simDays,
       daysToArrival: p.arrivalDay - this.simDays,
       missKm: (m.truthMissDistance() * AU) / 1000,
@@ -1943,6 +2013,7 @@ export class World {
 
   /** Per-frame mission update: dock → cruise → arrived, with TCM support. */
   private updateMission(): void {
+    this.updatePortRings();
     const m = this.mission;
     if (!m) return;
     const p = m.plan;

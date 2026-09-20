@@ -2,7 +2,8 @@ import type { StateVector } from '../physics/state';
 import { hermiteState } from './analysis';
 import { integrate, type TrajectoryPoint } from './integrate';
 import { makeForceModel, type SrpParams } from './perturbations';
-import { solarSystemSources } from './sources';
+import { bodyRadiusKm, solarSystemSources } from './sources';
+import { GravitySource } from './perturbations';
 
 // Truth trajectory for the flown mission: the spacecraft is integrated in the
 // FULL force field (Sun + planets + moons + optional solar radiation
@@ -13,16 +14,20 @@ import { solarSystemSources } from './sources';
 /** Default SRP model for a ~20 m^2 / 500 kg probe. */
 export const DEFAULT_SRP: SrpParams = { cr: 1.3, areaM2: 20, massKg: 500 };
 
+import { AU_KM } from '../data/constants';
+
 /**
- * Gravity softening (AU ≈ 150,000 km) for the truth model. The patched-conic
- * arc starts and ends exactly at a planet's centre, where the point-mass term
- * is singular — and worse, ephemeris round-off there produces force noise
- * larger than the dynamics, which collapses the adaptive step. Inside this
- * radius the planet's point mass is deliberately not modelled (that is launch
- * / arrival phase, handled by patched conics); the cruise dynamics are
- * unaffected (the term is < 1e-6 of solar gravity beyond it).
+ * Per-source gravity softening = the body's own radius. The spacecraft now
+ * starts in a *bound orbit* around the departure body (its synchronous-orbit
+ * spaceport), so that body's point mass must stay in the force model — with a
+ * softening scaled to the body, otherwise the port orbit would be destroyed by
+ * a fixed large softening (or, without any, the launch phase would be singular).
+ * Inside the body's radius the point mass is capped; the cruise is unaffected
+ * (at 1 AU the term is < 1e-6 of solar gravity).
  */
-export const TRUTH_SOFTENING = 1e-3;
+export function truthSoftening(src: GravitySource): number {
+  return bodyRadiusKm(src.id) / AU_KM;
+}
 
 export interface TruthOptions {
   /** Include solar radiation pressure (on by default). */
@@ -50,7 +55,7 @@ export class TruthTrajectory {
     const accel = makeForceModel(
       sources,
       (opts.srp ?? true) ? DEFAULT_SRP : undefined,
-      TRUTH_SOFTENING,
+      truthSoftening,
     );
     this.samples = integrate(state, startDay, endDay - startDay, accel, {
       maxStep: 2,

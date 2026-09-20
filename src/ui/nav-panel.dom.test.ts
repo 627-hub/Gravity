@@ -86,6 +86,7 @@ describe('nav panel wiring (DOM)', () => {
       departureId: 'earth', targetId: 'mars', phase: 'cruise' as const,
       departureDay: 0, arrivalDay: 300, tof: 300,
       dvDepart: 3, dvArrive: 2.5, dvTotal: 5.5,
+      vinfDepartKms: 3.0, vinfArriveKms: 2.6, departPort: null, arrivePort: null,
       daysToDeparture: 0, daysToArrival: 120,
       missKm: 1e5, estMissKm: 1.2e5, tcmDvKms: 0.05, tcmCount: 0, tcmUsedKms: 0,
       trackingLabel: null, trackCount: 0, estErrorKm: 0, posSigmaKm: 0,

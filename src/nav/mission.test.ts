@@ -78,33 +78,49 @@ describe('mission with TCM corrections', () => {
 
   it('L1: noisy tracking holds the estimate near the truth', () => {
     const m = new Mission(plan, { injectError: true, tracking: TRACKING_TIERS[1] });
-    const t = plan.departureDay + plan.tof * 0.75;
+    const t = plan.departureDay + plan.tof * 0.9;
     m.advance(t);
     expect(m.hasTracking).toBe(true);
     expect(m.trackingCount).toBeGreaterThan(100);
     expect(m.positionSigma()).toBeGreaterThan(0);
-    // Ground ranging + onboard optical navigation keep the estimate within
-    // ~10^4 km, where the raw dispersion would be ~10^6 km off by now.
-    expect(km(m.estimateError(t))).toBeLessThan(2e5);
+    // Ground ranging + onboard optical navigation pull the estimate down to
+    // ~10^4 km. Note the truth is the full n-body field (including SRP, which
+    // the onboard two-body model does not know about): the residual is the
+    // unmodelled SRP, ~10^7 km of drift over a 305-day cruise — real missions
+    // carry the SRP model in their filter for exactly this reason.
+    expect(km(m.estimateError(t))).toBeLessThan(1e5);
   });
 
-  it('L1: corrections computed from the estimate are imperfect but converge', () => {
+  it('L1: 修正把偏差逐级压到模型下限（终端段需要目标引力模型）', () => {
     const m = new Mission(plan, { injectError: true, tracking: TRACKING_TIERS[2] });
-    const t1 = plan.departureDay + plan.tof * 0.75;
+
+    // 第一次修正：中段，估计误差 ~7e4 km，把 7e6 km 的偏差砍掉一个量级
+    const t1 = plan.departureDay + plan.tof * 0.5;
     m.advance(t1);
     const uncorrected = km(m.truthMissDistance());
-    expect(uncorrected).toBeGreaterThan(3e5); // the flight really would miss
-    const dv1 = m.applyTcm(t1);
-    expect(dv1).not.toBeNull();
+    expect(uncorrected).toBeGreaterThan(1e6); // 不修正的话确实会飞掉
+    expect(m.applyTcm(t1)).not.toBeNull();
     const after1 = km(m.truthMissDistance());
-    expect(after1).toBeLessThan(uncorrected); // the correction helps
-    expect(after1).toBeGreaterThan(0);        // but estimation error leaves a residual
+    expect(after1).toBeLessThan(uncorrected / 10); // 修正非常有效
 
-    const t2 = plan.departureDay + plan.tof * 0.92;
+    // 第二次修正：估计更准（~4e3 km），再压一个量级
+    const t2 = plan.departureDay + plan.tof * 0.75;
     m.advance(t2);
     m.applyTcm(t2);
-    expect(km(m.truthMissDistance())).toBeLessThan(after1); // and improves again
-    expect(m.tcmCount).toBe(2);
+    const after2 = km(m.truthMissDistance());
+    expect(after2).toBeLessThan(after1 / 3);
+
+    // 第三次（末段）：撞上模型下限 —— 船载模型是纯二体，忽略目标引力；
+    // 抵达前 30 天飞船已进入火星 SOI，"瞄准港口"这个解本身带了 ~6e4 km 的
+    // 系统偏差，再修正也无法消除（真实任务的终端瞄准必须含目标引力）。
+    const t3 = plan.departureDay + plan.tof * 0.95;
+    m.advance(t3);
+    m.applyTcm(t3);
+    const after3 = km(m.truthMissDistance());
+    expect(after3).toBeLessThan(1.5e5);        // 停在模型下限
+    expect(after3).toBeGreaterThan(after2 / 5); // 不是继续收敛到零
+    expect(m.tcmCount).toBe(3);
+    expect(m.tcmUsedKms).toBeGreaterThan(0);
   });
 
   it('supports multiple corrections and refuses past arrival', () => {
