@@ -1,5 +1,5 @@
 import { PLANETS } from '../data/bodies';
-import { ISP_PRESETS, propellantFraction } from '../nav/maneuvers';
+import { DRIVES, burnDays, propellantFractionVe, thrustRegime } from '../nav/propulsion';
 import type { Spaceport } from '../nav/spaceport';
 import type { ManualBurnDir, NavSnapshot, PointingReading, World } from '../scene/world';
 
@@ -387,9 +387,14 @@ export function buildNavConsole(world: World): () => void {
     set('ncDvUsed', st.tcmCount ? `${st.tcmUsedKms.toFixed(3)} km/s · ${st.tcmCount} 次` : '未修正');
     set(
       'ncFuel',
-      ISP_PRESETS.map(
-        (p) => `${p.label} ${(propellantFraction(st.dvTotal, p.ispS) * 100).toFixed(0)}%`,
-      ).join(' · ') + `（Δv ${st.dvTotal.toFixed(2)} km/s，不含结构质量）`,
+      DRIVES.slice(0, 4)
+        .map((d) => {
+          const bd = burnDays(st.dvTotal, d.accelMps2);
+          const how = bd < 1 ? `${(bd * 24).toFixed(bd * 24 < 2 ? 1 : 0)} 小时` : `${bd.toFixed(0)} 天`;
+          const spiral = thrustRegime(bd, Math.max(st.tof, 1)) === 'low-thrust' ? '·螺旋' : '';
+          return `${d.label} ${(propellantFractionVe(st.dvTotal, d) * 100).toFixed(0)}%/${how}${spiral}`;
+        })
+        .join(' · ') + `（Δv ${st.dvTotal.toFixed(2)} km/s，单级不含结构）`,
     );
     set(
       'ncManual',

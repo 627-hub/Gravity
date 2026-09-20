@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ISP_PRESETS, massRatio, propellantFraction } from './maneuvers';
+import { massRatio, propellantFraction } from './maneuvers';
+import { DRIVES } from './propulsion';
 import {
   biEllipticTransfer,
   circularSpeed,
@@ -59,7 +60,7 @@ describe('rocket equation (Δv -> propellant)', () => {
     expect(windowMr).toBeLessThan(2.7);
     expect(offMr / windowMr).toBeGreaterThan(50);
     // 高比冲（电推）把同样的 Δv 变得可行
-    expect(propellantFraction(23.54, ISP_PRESETS[2].ispS)).toBeLessThan(0.6);
-    expect(propellantFraction(23.54, ISP_PRESETS[0].ispS)).toBeGreaterThan(0.99);
+    expect(propellantFraction(23.54, DRIVES[2].ispS!)).toBeLessThan(0.6);
+    expect(propellantFraction(23.54, DRIVES[0].ispS!)).toBeGreaterThan(0.99);
   });
 });

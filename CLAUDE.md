@@ -52,6 +52,8 @@ src/
                analysis.ts (closest approach, impact events),
                flyby.ts (B-plane gravity assists), targeting.ts (shoot a flyby to hit a target),
                plan.ts (bestTransfer: cheapest window; endpoints are spaceports),
+               propulsion.ts (drive table: exhaust velocity -> mass ratio, burn
+               duration, impulsive vs low-thrust regime, jet power, sail/interstellar),
                spaceport.ts (synchronous-orbit spaceports: r = (mu T^2/4pi^2)^(1/3),
                parking-orbit fallback for slow/retrograde/locked bodies, and the
                single-impulse escape/capture burn model with plane change),
