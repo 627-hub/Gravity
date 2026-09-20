@@ -62,6 +62,7 @@ export function buildNavConsole(world: World): () => void {
     <div class="nc-sec">位置 · 速度 · 轨道</div>
     <div class="nc-row"><span>日心距离</span><b id="ncR"></b></div>
     <div class="nc-row"><span>日心速度</span><b id="ncV"></b></div>
+    <div class="nc-row"><span>太阳逃逸速度比</span><b id="ncVesc"></b></div>
     <div class="nc-row"><span>轨道 a / e / i</span><b id="ncEl"></b></div>
     <div class="nc-row"><span>周期 / 飞行路径角</span><b id="ncPer"></b></div>
     <div class="nc-row"><span>目标距离 / 接近速度</span><b id="ncTgt"></b></div>
@@ -346,6 +347,11 @@ export function buildNavConsole(world: World): () => void {
 
     set('ncR', `${snap.shipAU.length().toFixed(3)} AU`);
     set('ncV', `${snap.shipSpeedKms.toFixed(2)} km/s`);
+    set(
+      'ncVesc',
+      `v/v_esc ${snap.escapeFraction.toFixed(2)}（逃逸 ${snap.escapeSpeedKms.toFixed(1)} km/s）`
+        + (snap.escapeFraction >= 1 ? ' · 已超太阳逃逸' : ''),
+    );
     set('ncEl', `${snap.orbit.a.toFixed(3)} / ${snap.orbit.e.toFixed(3)} / ${snap.orbit.iDeg.toFixed(2)}°`);
     set(
       'ncPer',

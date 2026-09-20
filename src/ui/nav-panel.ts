@@ -25,7 +25,7 @@ export function buildNavPanel(world: World): () => void {
       </div>
       <div class="row">
         <button id="navScan">扫描转移窗口</button>
-        <button id="navNow">立即出发</button>
+        <button id="navNow">立即出发（不等窗口）</button>
       </div>
       <label class="chk" id="navErrRow"><input type="checkbox" id="navErr" checked> 模拟发射误差</label>
       <div class="row"><select id="navTrack">
@@ -93,19 +93,22 @@ export function buildNavPanel(world: World): () => void {
     flashHint();
     window.setTimeout(() => {
       let t: TransferPlan | null = null;
+      // 今天就走多少钱？（窗口的本质是**Δv 预算**，不是物理禁令）
+      let today: TransferPlan | null = null;
+      const common = {
+        departure: bodyEphemeris(from),
+        target: bodyEphemeris(to),
+        departureId: from.id,
+        targetId: to.id,
+        tNow: world.simDays,
+        departStep: 5,
+        tofMin: 100,
+        tofMax: 450,
+        tofStep: 5,
+      };
       try {
-        t = bestTransfer({
-          departure: bodyEphemeris(from),
-          target: bodyEphemeris(to),
-          departureId: from.id,
-          targetId: to.id,
-          tNow: world.simDays,
-          horizonDays: immediate ? 0 : 1400,
-          departStep: 5,
-          tofMin: 100,
-          tofMax: 450,
-          tofStep: 5,
-        });
+        t = bestTransfer({ ...common, horizonDays: immediate ? 0 : 1400 });
+        today = immediate ? null : bestTransfer({ ...common, horizonDays: 15 });
       } catch (err) {
         console.error('[nav] scan failed', err);
         setHint(`扫描失败：${err instanceof Error ? err.message : String(err)}`);

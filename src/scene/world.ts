@@ -22,7 +22,7 @@ import { Mission as FlightMission } from '../nav/mission';
 import type { TrackingTier } from '../nav/navigator';
 import { P_SRP_1AU } from '../nav/perturbations';
 import { DEFAULT_SRP } from '../nav/truth';
-import { fromKms, toKms } from '../nav/units';
+import { AUDAY_TO_KMS, fromKms, MU_SUN, toKms } from '../nav/units';
 import { elementsFromState, type ClassicalElements } from '../nav/elements';
 import { makeForceModel, type AccelFn, type GravitySource } from '../nav/perturbations';
 import { Adcs, DEFAULT_ADCS } from '../nav/attitude';
@@ -97,6 +97,9 @@ export interface NavSnapshot {
   /** Truth state of the craft (heliocentric ecliptic). */
   shipAU: Vector3;
   shipSpeedKms: number;
+  /** 当前日心距离处的太阳逃逸速度（km/s）与飞船速度比（>1 = 已超太阳逃逸）。 */
+  escapeSpeedKms: number;
+  escapeFraction: number;
   targetAU: Vector3;
   targetDistKm: number;
   /** Rate of closure with the target, km/s (positive = approaching). */
@@ -875,6 +878,9 @@ export class World {
       progress: Math.min(1, Math.max(0, (t - p.departureDay) / p.tof)),
       shipAU,
       shipSpeedKms: toKms(shipVel.length()),
+      escapeSpeedKms: Math.sqrt((2 * MU_SUN) / Math.max(shipAU.length(), 1e-9)) * AUDAY_TO_KMS,
+      escapeFraction:
+        shipVel.length() / Math.sqrt((2 * MU_SUN) / Math.max(shipAU.length(), 1e-9)),
       targetAU,
       targetDistKm: (dist * AU) / 1000,
       closingKms: toKms(closing),
