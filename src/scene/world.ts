@@ -1787,6 +1787,10 @@ export class World {
     opts: { injectError?: boolean; tracking?: TrackingTier | null } = {},
   ): void {
     this.setDemo('normal');
+    // 进入任务视角：确保是可自由拖拽/滚轮缩放的状态（导览模式的"回弹+禁缩放"
+    // 会一路带进来，让用户觉得视角被锁死）。
+    this.setCameraReturn(false);
+    this.setZoomEnabled(true);
     const mission = new FlightMission(plan, {
       injectError: opts.injectError ?? true,
       tracking: opts.tracking ?? null,

@@ -88,39 +88,50 @@ describe('mission with TCM corrections', () => {
     // the onboard two-body model does not know about): the residual is the
     // unmodelled SRP, ~10^7 km of drift over a 305-day cruise — real missions
     // carry the SRP model in their filter for exactly this reason.
-    expect(km(m.estimateError(t))).toBeLessThan(1e5);
+    expect(km(m.estimateError(t))).toBeLessThan(2e4);
   });
 
-  it('L1: 修正把偏差逐级压到模型下限（终端段需要目标引力模型）', () => {
+  it('L1: 修正逐级收敛到港口精度（终端瞄准含目标引力）', () => {
     const m = new Mission(plan, { injectError: true, tracking: TRACKING_TIERS[2] });
 
-    // 第一次修正：中段，估计误差 ~7e4 km，把 7e6 km 的偏差砍掉一个量级
     const t1 = plan.departureDay + plan.tof * 0.5;
     m.advance(t1);
     const uncorrected = km(m.truthMissDistance());
     expect(uncorrected).toBeGreaterThan(1e6); // 不修正的话确实会飞掉
     expect(m.applyTcm(t1)).not.toBeNull();
     const after1 = km(m.truthMissDistance());
-    expect(after1).toBeLessThan(uncorrected / 10); // 修正非常有效
+    expect(after1).toBeLessThan(uncorrected / 10);
 
-    // 第二次修正：估计更准（~4e3 km），再压一个量级
     const t2 = plan.departureDay + plan.tof * 0.75;
     m.advance(t2);
     m.applyTcm(t2);
     const after2 = km(m.truthMissDistance());
     expect(after2).toBeLessThan(after1 / 3);
 
-    // 第三次（末段）：撞上模型下限 —— 船载模型是纯二体，忽略目标引力；
-    // 抵达前 30 天飞船已进入火星 SOI，"瞄准港口"这个解本身带了 ~6e4 km 的
-    // 系统偏差，再修正也无法消除（真实任务的终端瞄准必须含目标引力）。
+    // 终端瞄准用**含目标引力**的船载模型：不再撞纯二体那 ~6e4 km 的模型下限，
+    // 而是收敛到与跟踪质量相称的入泊精度（这里是最低精度档）。
     const t3 = plan.departureDay + plan.tof * 0.95;
     m.advance(t3);
     m.applyTcm(t3);
-    const after3 = km(m.truthMissDistance());
-    expect(after3).toBeLessThan(1.5e5);        // 停在模型下限
-    expect(after3).toBeGreaterThan(after2 / 5); // 不是继续收敛到零
+    expect(km(m.truthMissDistance())).toBeLessThan(2e4);
     expect(m.tcmCount).toBe(3);
-    expect(m.tcmUsedKms).toBeGreaterThan(0);
+    expect(m.tcmUsedKms).toBeLessThan(1);
+  });
+
+  it('高精度跟踪 + 终端修正 -> 亚千公里入泊（港口精度）', () => {
+    const m = new Mission(plan, { injectError: true, tracking: TRACKING_TIERS[0] });
+    const t = plan.departureDay + plan.tof * 0.95;
+    m.advance(t);
+    expect(m.applyTcm(t)).not.toBeNull();
+    expect(km(m.truthMissDistance())).toBeLessThan(1000);
+  });
+
+  it('船载模型含太阳光压后，巡航段估计误差降到 10^4 km 以内', () => {
+    const m = new Mission(plan, { injectError: true, tracking: TRACKING_TIERS[1] });
+    const t = plan.departureDay + plan.tof * 0.5;
+    m.advance(t);
+    // 不建模 SRP 时这里的模型误差是 ~1e7 km（305 天），估计根本跟不上。
+    expect(km(m.estimateError(t))).toBeLessThan(1e4);
   });
 
   it('supports multiple corrections and refuses past arrival', () => {

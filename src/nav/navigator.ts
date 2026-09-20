@@ -18,6 +18,12 @@ import { MPS_TO_AUDAY, MU_SUN } from './units';
 // never overconfident) and numerically bulletproof — the right trade for
 // this simulator. A square-root (UD) filter is the textbook upgrade path.
 
+/**
+ * 船载推进器：把状态从 t0 推进 dt 天。默认是日心二体；任务可以传入含目标
+ * 引力与太阳光压的模型（真值则是完整多体场）——即"船载模型的保真度"旋钮。
+ */
+export type AdvanceFn = (state: StateVector, t0: number, dt: number) => StateVector;
+
 export interface TrackingNoise {
   /** 1-sigma range noise, AU. */
   rangeSigma: number;
@@ -163,6 +169,8 @@ export interface NavigatorInit {
    * it is what keeps the filter honest over long coasts.
    */
   accelNoise?: number;
+  /** 船载推进模型；默认日心二体。 */
+  advance?: AdvanceFn;
 }
 
 const N = 6;
@@ -189,6 +197,7 @@ export class Navigator {
   private noise: TrackingNoise;
   private accelNoise: number;
   private t: number;
+  private advance: AdvanceFn;
 
   constructor(initial: StateVector, t0: number, init: NavigatorInit) {
     this.x[0] = initial.pos.x;
@@ -202,6 +211,7 @@ export class Navigator {
     }
     this.noise = init.noise;
     this.accelNoise = init.accelNoise ?? 1e-8;
+    this.advance = init.advance ?? ((st, _t0, dt) => propagate(st, dt, MU_SUN));
     this.t = t0;
   }
 
@@ -247,7 +257,9 @@ export class Navigator {
   propagateTo(t: number): void {
     const dt = t - this.t;
     if (dt <= 0) return;
-    const next = propagate(this.state(), dt, MU_SUN);
+    const adv = this.advance;
+    const t0 = this.t;
+    const next = adv(this.state(), t0, dt);
 
     // State transition matrix via central differences (smooth flow over days).
     const Phi = new Float64Array(N * N);
@@ -259,8 +271,8 @@ export class Navigator {
       const xm = this.x.slice();
       xp[i] += eps;
       xm[i] -= eps;
-      const fp = propagate(arrayState(xp), dt, MU_SUN);
-      const fm = propagate(arrayState(xm), dt, MU_SUN);
+      const fp = adv(arrayState(xp), t0, dt);
+      const fm = adv(arrayState(xm), t0, dt);
       const fpArr = [fp.pos.x, fp.pos.y, fp.pos.z, fp.vel.x, fp.vel.y, fp.vel.z];
       const fmArr = [fm.pos.x, fm.pos.y, fm.pos.z, fm.vel.x, fm.vel.y, fm.vel.z];
       for (let r = 0; r < N; r++) Phi[r * N + i] = (fpArr[r] - fmArr[r]) / (2 * eps);

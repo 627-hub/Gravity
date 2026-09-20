@@ -102,9 +102,17 @@ ideal-impulse reference only.
 
 The n-body truth integrates *with* the departure/arrival bodies in the force
 model (per-source softening = the body's radius): the escape and capture
-hyperbolas are real orbits about them. The onboard navigator stays two-body
-(Sun only), which is why the terminal approach has a ~10^5 km model floor — the
-onboard model does not know the target's gravity.
+hyperbolas are real orbits about them.
+
+The onboard force model is **Sun + departure/target bodies + SRP** (the SRP
+coefficient carries a deliberate ~10% a priori error, so a real residual
+remains). It drives the estimator's propagation, the predicted arc, and the
+terminal targeting — a differential corrector that aims at the port with the
+target's gravity in the loop (`Mission.aimAtPort`, numerically Jacobian'd,
+Newton with a step cap and a two-body Lambert fallback). Navigation quality is
+therefore set by the *tracking tier*, not by a model floor: with high-tier
+tracking a terminal TCM lands within ~300 km of the port, ~10^4 km on the
+lowest tier.
 
 ## Conventions
 

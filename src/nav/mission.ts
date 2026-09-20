@@ -3,14 +3,17 @@ import type { StateVector } from '../physics/state';
 import { AU_KM } from '../data/constants';
 import { PLANETS } from '../data/bodies';
 import { bodyEphemeris, type Ephemeris } from './ephemeris';
+import { integrate } from './integrate';
 import { lambert } from './lambert';
 import {
   makeMeasurement, makeOpticalMeasurement, mulberry32, Navigator, tierNoise,
   type OpticalMeasurement, type RangeMeasurement, type TrackingNoise, type TrackingTier,
 } from './navigator';
 import type { TransferPlan } from './plan';
+import { makeForceModel, type AccelFn, type GravitySource } from './perturbations';
 import { propagate } from './propagate';
-import { TruthTrajectory } from './truth';
+import { solarSystemSources } from './sources';
+import { DEFAULT_SRP, TruthTrajectory, truthSoftening } from './truth';
 import { fromKms, MPS_TO_AUDAY, MU_SUN, toKms } from './units';
 
 // A flown mission: the planned Lambert arc plus execution errors, noisy
@@ -34,6 +37,29 @@ import { fromKms, MPS_TO_AUDAY, MU_SUN, toKms } from './units';
 //     all the spacecraft is allowed to see when planning a correction.
 // Without tracking the estimate equals the truth (the L0 model); with tracking
 // corrections are imperfect and leave a residual miss — the L1 story.
+
+/** 解 3×3 线性方程组 J·x = b（克拉默法则）；奇异返回 null。 */
+function solve3x3(cols: Vector3[], b: Vector3): Vector3 | null {
+  const m = (c: Vector3[], k: number, r: number): number => (c[k].getComponent(r));
+  const det =
+    m(cols, 0, 0) * (m(cols, 1, 1) * m(cols, 2, 2) - m(cols, 1, 2) * m(cols, 2, 1)) -
+    m(cols, 1, 0) * (m(cols, 0, 1) * m(cols, 2, 2) - m(cols, 0, 2) * m(cols, 2, 1)) +
+    m(cols, 2, 0) * (m(cols, 0, 1) * m(cols, 1, 2) - m(cols, 0, 2) * m(cols, 1, 1));
+  if (Math.abs(det) < 1e-30) return null;
+  const detX =
+    b.x * (m(cols, 1, 1) * m(cols, 2, 2) - m(cols, 1, 2) * m(cols, 2, 1)) -
+    m(cols, 1, 0) * (b.y * m(cols, 2, 2) - b.z * m(cols, 2, 1)) +
+    m(cols, 2, 0) * (b.y * m(cols, 1, 2) - b.z * m(cols, 1, 1));
+  const detY =
+    m(cols, 0, 0) * (b.y * m(cols, 2, 2) - b.z * m(cols, 2, 1)) -
+    b.x * (m(cols, 0, 1) * m(cols, 2, 2) - m(cols, 0, 2) * m(cols, 2, 1)) +
+    m(cols, 2, 0) * (m(cols, 0, 1) * b.z - m(cols, 0, 2) * b.y);
+  const detZ =
+    m(cols, 0, 0) * (m(cols, 1, 1) * b.z - m(cols, 1, 2) * b.y) -
+    m(cols, 1, 0) * (m(cols, 0, 1) * b.z - m(cols, 0, 2) * b.y) +
+    b.x * (m(cols, 0, 1) * m(cols, 1, 2) - m(cols, 0, 2) * m(cols, 1, 1));
+  return new Vector3(detX / det, detY / det, detZ / det);
+}
 
 export interface FlightSegment {
   /** Truth state immediately after the segment start (launch or TCM). */
@@ -60,6 +86,18 @@ export const TRACK_INTERVAL_DAYS = 2;
 /** A-priori state uncertainty before any tracking (loose launch knowledge). */
 const P0_POS_KM = 1000;
 const P0_VEL_AUDAY = 0.05;
+
+/**
+ * 船载力模型的太阳光压系数偏差。船载模型 = 太阳 + 出发/目标天体 + 太阳光压，
+ * 但 Cr 只知其先验值到 ~10%（真实值 1.3，船载用 1.43）——这 10% 就是滤波器
+ * 必须靠跟踪吸收的模型误差。没有它，船载模型就等于真值，导航问题会假掉。
+ */
+const ONBOARD_SRP_CR_FACTOR = 1.1;
+
+/** 终端瞄准的迭代容差（1e-8 AU ≈ 1.5 km，受积分器精度限制）。 */
+const AIM_TOL_AU = 1e-8;
+/** 单步最大修正量（AU/day，≈1.7 km/s）；超过说明在发散。 */
+const AIM_MAX_STEP = 1e-3;
 
 export interface MissionOptions {
   injectError?: boolean;
@@ -105,6 +143,8 @@ export class Mission {
   private lastPredictDay = -Infinity;
   private lastRangeMeas: RangeMeasurement | null = null;
   private lastOpticalMeas: OpticalMeasurement | null = null;
+  /** 船载加速度模型（太阳 + 出发/目标天体 + SRP）与其推进器。 */
+  private onboardAccel: AccelFn;
 
   constructor(plan: TransferPlan, opts: MissionOptions = {}) {
     this.plan = plan;
@@ -117,6 +157,20 @@ export class Mission {
     this.beacon = target ? bodyEphemeris(target) : null;
     if (opts.tracking) this.trackNoise = tierNoise(opts.tracking);
     this.rng = mulberry32(Math.floor(plan.departureDay * 7919 + plan.targetId.length * 104729));
+    // 船载力模型。n-body 模式：太阳 + 出发/目标天体 + 太阳光压（Cr 有 10% 先验
+    // 偏差）——目标引力进模型后，终端瞄准才不再像纯二体那样差出 1e5 km；出发
+    // 天体也必须进来，因为飞船此刻就在它的引力井里点火逃逸。
+    // 二体模式：太阳 only（经典 patched-conic 理想化）。
+    const nbody = this.truthPhysics === 'n-body';
+    const wanted = nbody
+      ? new Set(['sun', plan.departureId, plan.targetId])
+      : new Set(['sun']);
+    const onboardSources: GravitySource[] = solarSystemSources().filter((src) => wanted.has(src.id));
+    this.onboardAccel = makeForceModel(
+      onboardSources,
+      nbody ? { ...DEFAULT_SRP, cr: DEFAULT_SRP.cr * ONBOARD_SRP_CR_FACTOR } : undefined,
+      nbody ? truthSoftening : 0,
+    );
     this.sampleStep = Math.max(0.5, plan.tof / 512);
     this.planArcPath = this.sampleArc(
       { pos: plan.r1.clone(), vel: plan.v1.clone() },
@@ -137,17 +191,6 @@ export class Mission {
     this.nextSampleDay = this.plan.departureDay;
     this.lastRangeMeas = null;
     this.lastOpticalMeas = null;
-    this.navigator = this.trackNoise
-      ? new Navigator(
-          { pos: this.plan.r1.clone(), vel: this.plan.v1.clone() },
-          this.plan.departureDay,
-          {
-            noise: this.trackNoise,
-            posSigma0: P0_POS_KM / AU_KM,
-            velSigma0: P0_VEL_AUDAY,
-          },
-        )
-      : null;
 
     // n-body 真值从太空港点火后的逃逸状态出发（行星引力参与，逃逸双曲线是真的）。
     // 二体模式是经典的 patched-conic 理想化：日心弧从港口位置以转移速度出发，
@@ -157,6 +200,22 @@ export class Mission {
       this.truthPhysics === 'n-body' && this.plan.departureState
         ? this.plan.departureState
         : { pos: this.plan.r1.clone(), vel: this.plan.v1.clone() };
+
+    // 船载先验状态 = 同一个起点（飞船当然知道自己点火后的状态），与船载力模型
+    // 自洽：n-body 模式下它就处在出发天体的引力井里，模型和状态必须匹配。
+    this.navigator = this.trackNoise
+      ? new Navigator(
+          { pos: start.pos.clone(), vel: start.vel.clone() },
+          this.plan.departureDay,
+          {
+            noise: this.trackNoise,
+            posSigma0: P0_POS_KM / AU_KM,
+            velSigma0: P0_VEL_AUDAY,
+            advance: (st, t0, dt) => this.advanceOnboard(st, t0, dt),
+          },
+        )
+      : null;
+
     const v = start.vel.clone();
     if (this.injectError) {
       const burnAuday = this.plan.burnDepart
@@ -180,6 +239,58 @@ export class Mission {
     }
     this.predicted = this.sampleArc(first.state, first.startDay, first.endDay);
     this.lastPredictDay = -Infinity;
+  }
+
+  /** 船载模型推进（n-body 模式含出发/目标引力与 SRP；二体模式即太阳二体）。 */
+  private advanceOnboard(state: StateVector, t0: number, dt: number): StateVector {
+    const pts = integrate(state, t0, dt, this.onboardAccel, {
+      maxStep: this.truthPhysics === 'n-body' ? 1.5 : 5,
+      rtol: 1e-9,
+      atol: 1e-11,
+    });
+    const last = pts[pts.length - 1];
+    return { pos: last.pos.clone(), vel: last.vel.clone() };
+  }
+
+  /** 从 `pos`/`vel` 用船载模型飞到抵达时刻，返回相对目标港的偏差。 */
+  private aimMiss(pos: Vector3, vel: Vector3, t: number): Vector3 {
+    const tof = this.plan.arrivalDay - t;
+    const end = this.advanceOnboard({ pos, vel }, t, tof);
+    return this.plan.r2.clone().sub(end.pos);
+  }
+
+  /**
+   * 终端瞄准：用**含目标引力的船载模型**做微分修正，解出命中港口的出发速度。
+   * 以二体 Lambert 解为初值，数值雅可比 3×3，最多 8 次迭代。
+   * 返回 null 表示不收敛（调用方回退到二体 Lambert 解）。
+   */
+  private aimAtPort(pos: Vector3, t: number): Vector3 | null {
+    const tof = this.plan.arrivalDay - t;
+    let v: Vector3;
+    try {
+      v = lambert(pos, this.plan.r2, tof, MU_SUN).v1;
+    } catch {
+      return null;
+    }
+    const eps = 1e-9; // AU/day
+    const col = [new Vector3(), new Vector3(), new Vector3()];
+    for (let iter = 0; iter < 8; iter++) {
+      const miss = this.aimMiss(pos, v, t);
+      if (miss.length() < AIM_TOL_AU) return v;
+      // 数值雅可比 ∂r_f/∂v（列 = 对每个速度分量扰动后的落点变化）
+      for (let c = 0; c < 3; c++) {
+        const vp = v.clone();
+        vp.setComponent(c, vp.getComponent(c) + eps);
+        const mp = this.aimMiss(pos, vp, t);
+        col[c].copy(mp).sub(miss).divideScalar(eps);
+      }
+      // 对偏差函数求雅可比，所以 Newton 步解的是 J·δv = −miss。
+      const dv = solve3x3(col, miss.clone().multiplyScalar(-1));
+      if (!dv || dv.length() > AIM_MAX_STEP) return null; // 发散：交给回退解
+      v.add(dv);
+    }
+    // 迭代被 8 次截断时也要验收：落点必须真的到港（15 km 以内）。
+    return this.aimMiss(pos, v, t).length() < 1e-7 ? v : null;
   }
 
   /** Deterministic pseudo-random dispersion direction (stable per mission). */
@@ -268,15 +379,19 @@ export class Mission {
     return this.predicted;
   }
 
-  /** Rebuild the onboard predicted arc from the current estimate. */
+  /** Rebuild the onboard predicted arc from the current estimate (船载模型). */
   private refreshPrediction(t: number): void {
     const est = this.navigator ? this.navigator.state() : this.stateAt(t);
-    const n = 160;
-    const out: Vector3[] = [];
     const span = this.plan.arrivalDay - t;
-    for (let k = 0; k <= n; k++) {
-      out.push(propagate(est, (span * k) / n, MU_SUN).pos);
-    }
+    const pts = integrate(est, t, span, this.onboardAccel, {
+      maxStep: 2,
+      rtol: 1e-9,
+      atol: 1e-11,
+    });
+    const step = Math.max(1, Math.floor(pts.length / 200));
+    const out: Vector3[] = [];
+    for (let k = 0; k < pts.length; k += step) out.push(pts[k].pos.clone());
+    out.push(pts[pts.length - 1].pos.clone());
     this.predicted = out;
     this.lastPredictDay = t;
   }
@@ -336,13 +451,18 @@ export class Mission {
   solveTcm(t: number): TcmSolution | null {
     if (t < this.plan.departureDay || t >= this.plan.arrivalDay) return null;
     const est = this.estimateState(t);
-    try {
-      const { v1 } = lambert(est.pos, this.plan.r2, this.plan.arrivalDay - t, MU_SUN);
-      const dv = v1.clone().sub(est.vel);
-      return { dv, dvKms: toKms(dv.length()), state: { pos: est.pos.clone(), vel: v1 } };
-    } catch {
-      return null;
+    // 优先用含目标引力的微分修正；不收敛时回退到二体 Lambert（保守但可用）。
+    let v = this.aimAtPort(est.pos, t);
+    if (!v) {
+      try {
+        v = lambert(est.pos, this.plan.r2, this.plan.arrivalDay - t, MU_SUN).v1;
+      } catch {
+        return null;
+      }
     }
+    const dv = v.clone().sub(est.vel);
+    if (toKms(dv.length()) > 20) return null; // 离谱的解不要（不是修正，是重做任务）
+    return { dv, dvKms: toKms(dv.length()), state: { pos: est.pos.clone(), vel: v.clone() } };
   }
 
   /**
