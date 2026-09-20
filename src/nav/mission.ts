@@ -1,6 +1,6 @@
 import { Vector3 } from 'three';
 import type { StateVector } from '../physics/state';
-import { AU_KM } from '../data/constants';
+import { AU, AU_KM, DAY } from '../data/constants';
 import { PLANETS } from '../data/bodies';
 import { bodyEphemeris, type Ephemeris } from './ephemeris';
 import { integrate } from './integrate';
@@ -12,6 +12,7 @@ import {
 import type { TransferPlan } from './plan';
 import { makeForceModel, type AccelFn, type GravitySource } from './perturbations';
 import { DRIVES, massRatioVe, thrustDirection, type Drive, type ThrustDir } from './propulsion';
+import { DIPOLE_MOMENT, tetherForceN, windSailThrustN } from './tether';
 import { propagate } from './propagate';
 import { solarSystemSources } from './sources';
 import { DEFAULT_SRP, TruthTrajectory, truthSoftening } from './truth';
@@ -303,9 +304,19 @@ export class Mission {
     return this.drive.accelMps2 * (DRY_MASS_KG + PROPELLANT_KG0);
   }
 
-  /** 是否是无工质推进（光帆/束能）——质量不随点火变化。 */
+  /** 是否是无工质推进——质量不随点火变化。 */
   get isPropellantless(): boolean {
     return this.drive.kind !== 'rocket';
+  }
+
+  /** 缆绳所依附的天体（取出发点；无磁场天体则退化为无推力）。 */
+  private tetherBody(): { id: string; momentAm2: number; omegaRadPerDay: number } | null {
+    const id = this.plan.departureId;
+    const body = PLANETS.find((b) => b.id === id);
+    if (!body) return null;
+    const moment = DIPOLE_MOMENT[id] ?? 0;
+    const omega = body.rotationPeriod !== 0 ? (2 * Math.PI) / body.rotationPeriod : 0;
+    return { id, momentAm2: moment, omegaRadPerDay: omega };
   }
 
   /** 当前推力加速度（m/s²）与 T/W 比值。 */
@@ -346,12 +357,38 @@ export class Mission {
                   mass0Kg,
                   dryMassKg: DRY_MASS_KG,
                 }
+              : drive.kind === 'tether'
+              ? {
+                  // 电动力缆绳：力依赖相对行星的 r 与 v（含自转牵连）
+                  direction: (_pos, _vel, out) => out.set(0, 0, 1),
+                  accelVec: (pos, vel, out) => {
+                    const tb = this.tetherBody();
+                    const body = tb ? PLANETS.find((b) => b.id === tb.id) : undefined;
+                    if (!tb || !body || tb.momentAm2 === 0) return out.set(0, 0, 0);
+                    const st = bodyEphemeris(body).stateAt(t);
+                    // 导航层是 AU / AU·day⁻¹；缆绳模块要 SI —— 这里换算
+                    const relPosM = new Vector3().subVectors(pos, st.pos).multiplyScalar(AU);
+                    const omegaPerSec = new Vector3(0, 0, tb.omegaRadPerDay / DAY);
+                    const vRelMps = new Vector3().subVectors(vel, st.vel)
+                      .multiplyScalar(AU / DAY)
+                      .sub(new Vector3().crossVectors(omegaPerSec, relPosM));
+                    const fN = tetherForceN({ lengthKm: 10, currentA: level * 20 }, tb.momentAm2, relPosM, vRelMps);
+                    return out.copy(fN).multiplyScalar(1 / (DRY_MASS_KG + PROPELLANT_KG0)); // m/s²
+                  },
+                }
               : {
                   // 无工质：加速度由外部光子给，质量不变
                   direction: (pos, vel, out) => thrustDirection(dir, pos, vel, out),
                   accelAt: drive.kind === 'sail-solar'
                     ? (pos) => level * drive.accelMps2 / Math.max(pos.lengthSq(), 1e-6)
-                    : () => level * drive.accelMps2,
+                    : drive.kind === 'wind-sail'
+                      ? (pos) => (() => {
+                          const p = drive.id === 'magsail'
+                            ? { kind: 'magsail' as const, size: 100 }
+                            : { kind: 'esail' as const, size: 20, wires: 100 };
+                          return (level * windSailThrustN(p, pos.length())) / (DRY_MASS_KG + PROPELLANT_KG0);
+                        })()
+                      : () => level * drive.accelMps2,
                 }
             : undefined,
         }),

@@ -88,6 +88,9 @@ export function buildNavConsole(world: World): () => void {
         <option value="fusion">聚变</option>
         <option value="solar-sail">太阳帆</option>
         <option value="beam-sail">束能帆</option>
+        <option value="magsail">磁帆</option>
+        <option value="esail">电帆</option>
+        <option value="tether">电动力缆绳</option>
       </select>
       <input type="number" id="ncThrottle" value="100" min="0" max="100" step="10" title="油门 %" />
       <select id="ncThrustDir">
@@ -442,14 +445,16 @@ export function buildNavConsole(world: World): () => void {
     set(
       'ncDrive',
       `${st.driveLabel} · 质量 ${st.massKg.toFixed(0)} kg`
-        + (st.driveLabel === '太阳帆' || st.driveLabel === '束能帆'
-          ? '（无工质，动量来自外部光子）'
+        + (['太阳帆', '束能帆', '磁帆', '电帆'].includes(st.driveLabel)
+          ? '（无工质，动量来自外部光子/太阳风）'
+          : st.driveLabel === '电动力缆绳'
+          ? '（与行星磁场交换动量）'
           : `（推进剂 ${st.propellantKg.toFixed(0)}）`)
         + ` · 加速度 ${st.thrustMms2.toFixed(3)} mm/s²`
         + (st.thrustActive ? ' · 点火中' : ' · 关机'),
     );
-    burnOn.disabled = snap.phase === 'arrived'
-      || (st.propellantKg <= 1 && st.driveLabel !== '太阳帆' && st.driveLabel !== '束能帆');
+    const noFuel = ['太阳帆', '束能帆', '磁帆', '电帆', '电动力缆绳'].includes(st.driveLabel);
+    burnOn.disabled = snap.phase === 'arrived' || (st.propellantKg <= 1 && !noFuel);
     burnOff.disabled = !st.thrustActive;
 
     bar.style.width = `${(snap.progress * 100).toFixed(1)}%`;

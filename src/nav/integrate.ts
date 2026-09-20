@@ -17,6 +17,11 @@ export interface ThrustModel {
    * 太阳帆 a ∝ 1/r²；束能帆（激光阵）在射程内近似常数。
    */
   accelAt?: (pos: Vector3) => number;
+  /**
+   * 更一般的无工质力：直接给出该状态下的加速度矢量（m/s²，日心黄道系）。
+   * 用于依赖速度/磁场的力（电动力缆绳 F = I·L×(v_rel×B)）。
+   */
+  accelVec?: (pos: Vector3, vel: Vector3, out: Vector3) => Vector3;
   /** 推力，N（有工质推进用）。 */
   thrustN?: number;
   /** 排气速度 v_e = Isp·g0，km/s。 */
@@ -99,7 +104,7 @@ export function integrate(
   const maxStep = opts.maxStep ?? Math.abs(dt);
 
   const thrust = opts.thrust;
-  const rocket = thrust && !thrust.accelAt ? thrust : null; // 有工质（火箭）模式
+  const rocket = thrust && !thrust.accelAt && !thrust.accelVec ? thrust : null; // 有工质（火箭）模式
   const mdot = rocket ? massFlowKgPerDay(rocket.thrustN!, rocket.exhaustKms!) : 0;
   const massAt = (tt: number): number => {
     if (!rocket) return 0;
@@ -136,6 +141,11 @@ export function integrate(
     //  · 光帆/束能：加速度来自外部光子（a ∝ 1/r² 或常数），不消耗质量。
     const addThrust = (tt: number, pos: Vector3, vel: Vector3, out: Vector3): void => {
       if (!thrust) return;
+      if (thrust.accelVec) {
+        thrust.accelVec(pos, vel, tDir);
+        out.addScaledVector(tDir, MPS2_TO_AUDAY2);
+        return;
+      }
       if (thrust.accelAt) {
         const a = thrust.accelAt(pos); // m/s²
         if (a <= 0) return;

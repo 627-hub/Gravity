@@ -49,8 +49,11 @@ export function thrustDirection(
 export interface Drive {
   id: string;
   label: string;
-  /** 推进方式：自带工质 / 太阳帆（a∝1/r²） / 束能帆（射程内近似常数）。 */
-  kind: 'rocket' | 'sail-solar' | 'sail-beamed';
+  /**
+   * 推进方式：自带工质 / 太阳帆（a∝1/r²） / 束能帆（常数） /
+   * 太阳风帆（磁帆、电帆）/ 电动力缆绳（与行星磁场交换动量）。
+   */
+  kind: 'rocket' | 'sail-solar' | 'sail-beamed' | 'wind-sail' | 'tether';
   /** 有效排气速度 v_e = Isp·g0，km/s（光帆=Infinity，不携带推进剂）。 */
   exhaustKms: number;
   /** 工作加速度量级，m/s²（决定一次点火要烧多久）。 */
@@ -75,6 +78,12 @@ export const DRIVES: Drive[] = [
     note: 'v_e ~0.3c：质量比宽裕，但反物质产量以 ng 计、储存极难。' },
   { kind: 'sail-solar', id: 'solar-sail', label: '太阳帆', exhaustKms: Infinity, accelMps2: 1e-4, propellant: false, ispS: null,
     note: '不携带推进剂：动量来自太阳光子（a ∝ 1/r²，1 AU 处 ~0.1 mm/s²）。必须偏锥角才有切向推力。' },
+  { kind: 'wind-sail', id: 'magsail', label: '磁帆', exhaustKms: Infinity, accelMps2: 2e-3, propellant: false, ispS: null,
+    note: '太阳风动压推 100 km 磁层顶：F∝1/r²，1 AU 处 ~N 级。不带工质。' },
+  { kind: 'wind-sail', id: 'esail', label: '电帆', exhaustKms: Infinity, accelMps2: 2e-3, propellant: false, ispS: null,
+    note: '带电导线偏转太阳风质子：≈0.5 N / 1000 km 导线 @1 AU，F∝1/r。' },
+  { kind: 'tether', id: 'tether', label: '电动力缆绳', exhaustKms: Infinity, accelMps2: 5e-3, propellant: false, ispS: null,
+    note: '与行星磁场交换动量（磁场随行星自转）——真正的"外部动量"。只在有内禀磁场的天体附近有效（地球/木星/木卫三），赤道面上力为零。' },
   { kind: 'sail-beamed', id: 'beam-sail', label: '束能帆', exhaustKms: Infinity, accelMps2: 1e-3, propellant: false, ispS: null,
     note: '不携带推进剂：激光阵从母星持续供能供动量，射程内加速度近似常数、方向可指。' },
 ];
