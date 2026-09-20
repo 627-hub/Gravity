@@ -1,6 +1,6 @@
 import { PLANETS } from '../data/bodies';
 import type { Spaceport } from '../nav/spaceport';
-import type { NavSnapshot, PointingReading, World } from '../scene/world';
+import type { ManualBurnDir, NavSnapshot, PointingReading, World } from '../scene/world';
 
 // Spacecraft flight-deck console: an attitude/pointing indicator (where the
 // Sun, Earth, the target and the gravity vector sit relative to the nose),
@@ -75,6 +75,19 @@ export function buildNavConsole(world: World): () => void {
     <div class="nc-row"><span>离港逃逸 + 入泊捕获</span><b id="ncDvPlan"></b></div>
     <div class="nc-row"><span>修正已用</span><b id="ncDvUsed"></b></div>
     <div class="nc-row"><span>地表↔港（另案系统）</span><b id="ncSurf"></b></div>
+    <div class="nc-row"><span>手动点火</span><b id="ncManual"></b></div>
+    <div class="row nc-burn">
+      <select id="ncBurnDir">
+        <option value="prograde">顺行 +v</option>
+        <option value="retrograde">逆行 −v</option>
+        <option value="radialOut">径向外</option>
+        <option value="radialIn">径向内</option>
+        <option value="normal">轨道法向</option>
+        <option value="antiNormal">反法向</option>
+      </select>
+      <input type="number" id="ncBurnDv" value="50" min="0.1" max="5000" step="10" title="Δv (m/s)" />
+      <button id="ncBurnGo">点火</button>
+    </div>
     <div class="nc-sec">日心航线</div>
     <canvas id="ncMap" width="${MAP_W}" height="${MAP_H}"></canvas>
     <div class="nc-legend">
@@ -107,6 +120,18 @@ export function buildNavConsole(world: World): () => void {
 
   (root.querySelector('#ncFollow') as HTMLButtonElement).addEventListener('click', () => {
     world.followCraft();
+  });
+
+  // Manual burn: fly the ship by hand (Δv along a chosen body-frame direction).
+  const burnDir = root.querySelector('#ncBurnDir') as HTMLSelectElement;
+  const burnDv = root.querySelector('#ncBurnDv') as HTMLInputElement;
+  const burnGo = root.querySelector('#ncBurnGo') as HTMLButtonElement;
+  burnGo.addEventListener('click', () => {
+    const mps = Number(burnDv.value);
+    if (!Number.isFinite(mps) || mps <= 0) return;
+    const applied = world.manualBurn(mps / 1000, burnDir.value as ManualBurnDir);
+    burnGo.textContent = applied === null ? '无效' : `已点火 ${mps.toFixed(0)} m/s`;
+    setTimeout(() => { burnGo.textContent = '点火'; }, 1200);
   });
 
   const set = (id: string, text: string): void => {
@@ -352,6 +377,13 @@ export function buildNavConsole(world: World): () => void {
         : '—',
     );
     set('ncDvUsed', st.tcmCount ? `${st.tcmUsedKms.toFixed(3)} km/s · ${st.tcmCount} 次` : '未修正');
+    set(
+      'ncManual',
+      st.manualCount
+        ? `${st.manualUsedKms.toFixed(3)} km/s · ${st.manualCount} 次`
+        : '—（驾驶台右侧可手动点火）',
+    );
+    burnGo.disabled = snap.phase === 'arrived';
 
     bar.style.width = `${(snap.progress * 100).toFixed(1)}%`;
     const tRel = Math.round(snap.simDays - snap.departureDay);

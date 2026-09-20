@@ -4,6 +4,7 @@ import { PLANETS } from '../data/bodies';
 import { AU } from '../data/constants';
 import { bodyEphemeris } from './ephemeris';
 import { Mission } from './mission';
+import { fromKms, toKms } from './units';
 import { TRACKING_TIERS } from './navigator';
 import { bestTransfer } from './plan';
 
@@ -132,6 +133,34 @@ describe('mission with TCM corrections', () => {
     m.advance(t);
     // 不建模 SRP 时这里的模型误差是 ~1e7 km（305 天），估计根本跟不上。
     expect(km(m.estimateError(t))).toBeLessThan(1e4);
+  });
+
+  it('手动点火：真实改变弹道并计入台账（可手动“开”飞船）', () => {
+    const m = new Mission(plan, { injectError: false });
+    const t = plan.departureDay + plan.tof * 0.5;
+    const v0 = m.stateAt(t).vel.length();
+
+    // 顺行 100 m/s
+    const fwd = m.stateAt(t).vel.clone().normalize();
+    const applied = m.applyManualBurn(t, fwd.multiplyScalar(fromKms(0.1)));
+    expect(applied).toBeCloseTo(0.1, 9);
+    expect(m.manualCount).toBe(1);
+    expect(m.manualUsedKms).toBeCloseTo(0.1, 9);
+    // 点火后瞬时速率正好加 0.1 km/s（同向）
+    expect(toKms(m.stateAt(t).vel.length() - v0)).toBeCloseTo(0.1, 6);
+    // 弹道被改变：原本按计划抵达，现在会错过（100 m/s 在 150 天后是百万公里量级）
+    expect(km(m.truthMissDistance())).toBeGreaterThan(1e5);
+
+    // 逆行点火让速率下降，台账累加
+    const t2 = plan.departureDay + plan.tof * 0.6;
+    const v1 = m.stateAt(t2).vel.length();
+    m.applyManualBurn(t2, m.stateAt(t2).vel.clone().normalize().multiplyScalar(fromKms(-0.05)));
+    expect(toKms(m.stateAt(t2).vel.length() - v1)).toBeCloseTo(-0.05, 6);
+    expect(m.manualCount).toBe(2);
+    expect(m.manualUsedKms).toBeCloseTo(0.15, 9);
+
+    // 抵达之后不再接受点火
+    expect(m.applyManualBurn(plan.arrivalDay, fwd)).toBeNull();
   });
 
   it('supports multiple corrections and refuses past arrival', () => {

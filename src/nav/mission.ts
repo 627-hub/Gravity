@@ -125,6 +125,9 @@ export class Mission {
   readonly planArcPath: Vector3[];
   tcmCount = 0;
   tcmUsedKms = 0;
+  /** 手动点火次数与累计 Δv（km/s）。 */
+  manualCount = 0;
+  manualUsedKms = 0;
 
   private injectError: boolean;
   private truthPhysics: 'two-body' | 'n-body';
@@ -186,6 +189,8 @@ export class Mission {
     this.flown.length = 0;
     this.tcmCount = 0;
     this.tcmUsedKms = 0;
+    this.manualCount = 0;
+    this.manualUsedKms = 0;
     this.lastDay = -Infinity;
     this.nextTrackDay = this.plan.departureDay;
     this.nextSampleDay = this.plan.departureDay;
@@ -492,6 +497,33 @@ export class Mission {
     this.tcmCount += 1;
     this.tcmUsedKms += sol.dvKms;
     return sol.dvKms;
+  }
+
+  /**
+   * 手动点火：把用户指定的 Δv（AU/day，日心系）施加到真值轨迹上，并让滤波器
+   * 知道这次点火（它由加速度计/指令记录可知）。返回施加的 Δv（km/s）。
+   */
+  applyManualBurn(t: number, dv: Vector3): number | null {
+    if (t < this.plan.departureDay || t >= this.plan.arrivalDay) return null;
+    const dvKms = toKms(dv.length());
+    if (dvKms <= 0) return null;
+    this.updateFlown(t);
+    const truth = this.stateAt(t);
+    const truthAfter: StateVector = {
+      pos: truth.pos.clone(),
+      vel: truth.vel.clone().add(dv),
+    };
+    this.segments.push({ state: truthAfter, startDay: t, endDay: this.plan.arrivalDay });
+    if (this.truthPhysics === 'n-body') {
+      this.trajectories.push(
+        new TruthTrajectory(truthAfter, t, this.plan.arrivalDay, { srp: this.srp }),
+      );
+    }
+    this.navigator?.applyBurn(dv);
+    this.refreshPrediction(t);
+    this.manualCount += 1;
+    this.manualUsedKms += dvKms;
+    return dvKms;
   }
 
   /** Append actual-path samples up to `t`; safe to call every frame. */

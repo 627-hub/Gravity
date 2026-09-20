@@ -20,10 +20,16 @@ import { NBody } from '../physics/nbody';
 import { NavViz, CRAFT_ID } from './nav-viz';
 import { Mission as FlightMission } from '../nav/mission';
 import type { TrackingTier } from '../nav/navigator';
-import { toKms } from '../nav/units';
+import { P_SRP_1AU } from '../nav/perturbations';
+import { DEFAULT_SRP } from '../nav/truth';
+import { fromKms, toKms } from '../nav/units';
 import { elementsFromState, type ClassicalElements } from '../nav/elements';
 import { makeForceModel, type AccelFn, type GravitySource } from '../nav/perturbations';
 import { Adcs, DEFAULT_ADCS } from '../nav/attitude';
+
+/** 手动点火方向（相对飞船当前的真值状态）。 */
+export type ManualBurnDir =
+  | 'prograde' | 'retrograde' | 'radialOut' | 'radialIn' | 'normal' | 'antiNormal';
 import type { Spaceport } from '../nav/spaceport';
 import { solarSystemSources } from '../nav/sources';
 import type { TransferPlan } from '../nav/plan';
@@ -186,6 +192,8 @@ export interface MissionStatus {
   tcmDvKms: number | null;
   tcmCount: number;
   tcmUsedKms: number;
+  manualCount: number;
+  manualUsedKms: number;
   /** L1 readout: null when flying without tracking (truth navigation). */
   trackingLabel: string | null;
   trackCount: number;
@@ -311,7 +319,7 @@ export class World {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
-    this.controls.enableZoom = false; // no mouse-wheel zoom — framing is per-slide
+    this.controls.enableZoom = true; // free flight: the user owns the camera
     // Track the pointer for free-explore hover highlighting.
     const cv = this.renderer.domElement;
     cv.addEventListener('pointermove', (e) => {
@@ -700,6 +708,30 @@ export class World {
     this.updateMission();
   }
 
+  /**
+   * 手动点火：在当前时刻沿指定方向给飞船一个 Δv（km/s）。
+   * 方向取飞船当前的真值状态：顺行/逆行（沿速度）、径向外/内（沿日心矢径）、
+   * 法向/反法向（沿轨道面法线）。点火即写入真值轨迹（与 TCM 同一套机制），
+   * 因此会真实改变后续弹道——可以自己"开"飞船。
+   */
+  manualBurn(dvKms: number, dir: ManualBurnDir): number | null {
+    if (!this.mission || dvKms === 0) return null;
+    const st = this.mission.stateAt(this.simDays);
+    const fwd = st.vel.clone().normalize();
+    let axis = fwd;
+    if (dir === 'retrograde') axis = fwd.clone().negate();
+    else if (dir !== 'prograde') {
+      const rHat = st.pos.clone().normalize();
+      if (dir === 'radialOut') axis = rHat;
+      else if (dir === 'radialIn') axis = rHat.clone().negate();
+      else {
+        const h = new Vector3().crossVectors(st.pos, st.vel).normalize();
+        axis = dir === 'normal' ? h : h.negate();
+      }
+    }
+    return this.mission.applyManualBurn(this.simDays, axis.multiplyScalar(fromKms(dvKms)));
+  }
+
   /** Remove the spacecraft and its trajectory. */
   clearMission(): void {
     this.mission = null;
@@ -805,7 +837,12 @@ export class World {
         ? ((g.length() * AU) / (DAY * DAY)) * 1000
         : null;
     const gravity = g && gravityMms2 !== null ? toCraft(g) : null;
-    const nonGravUg = Math.abs(Math.sin(t * 12.9898 + 4.1414)) * 0.2;
+    // 非引力加速度 = 太阳光压（真值模型里唯一未建模为引力的力）：a = P·Cr·A/m / r²，
+    // 单位 µg（1 g = 9.80665 m/s²）。不再用伪造读数。
+    const rHelioAu = Math.max(shipAU.length(), 1e-6);
+    const srpMps2 =
+      (P_SRP_1AU * DEFAULT_SRP.cr * DEFAULT_SRP.areaM2) / DEFAULT_SRP.massKg / (rHelioAu * rHelioAu);
+    const nonGravUg = accelOk ? (srpMps2 / 9.80665) * 1e6 : 0;
 
     const orbit = elementsFromState({ pos: shipAU, vel: shipVel });
     const gyroDegPerDay =
@@ -901,6 +938,8 @@ export class World {
       tcmDvKms: sol ? sol.dvKms : null,
       tcmCount: m.tcmCount,
       tcmUsedKms: m.tcmUsedKms,
+      manualCount: m.manualCount,
+      manualUsedKms: m.manualUsedKms,
       trackingLabel: this.missionTrackingLabel,
       trackCount: m.trackingCount,
       estErrorKm: m.hasTracking ? (m.estimateError(this.simDays) * AU) / 1000 : 0,
