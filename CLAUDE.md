@@ -12,11 +12,12 @@ planning (transfer windows, spaceport departure/arrival), onboard navigation
 Everything is driven by real astronomical data; only the *scale* is faked (and
 that's a user toggle).
 
-**There is no guided tour.** The app boots straight into free flight. The
-teaching demos that the tour used to drive (`inertia`, `accretion`, `helix`,
-`orbit-intro`, `rocket`, `soi`, `flyby`, `spacetime`, `precession` — the
-`DemoMode` branches in `world.ts`) are still in the code but have **no UI entry
-point** any more; they are candidates for deletion.
+**There is no guided tour and no teaching demos.** The app boots straight into
+free flight over the live system. `world.ts` keeps only the renderer/engine
+core (bodies, moons, orbits, labels, scale, physics, camera, time) plus the
+navigation mission visuals. The old walkthrough machinery — `DemoMode`, the
+particle/vector/Probe/Spacetime/Precession/Voyager slide code, the parallax
+starfield and the teaching-vector overlays — has been **deleted**.
 
 ## Commands
 
@@ -62,7 +63,8 @@ src/
   scene/
     scale.ts     real vs visual scale models
     textures.ts  procedural canvas surface textures (offline; Earth uses a real image)
-    world.ts     the Three.js engine — scene, bodies, orbits, vectors, and every demo
+    world.ts     the Three.js engine — scene, bodies, moons, orbits, camera,
+                 time/scale/physics, and the navigation-mission visuals
     nav-viz.ts   spacecraft model + transfer arc rendering (NavViz, CRAFT_ID)
   ui/
     panel.ts     main control panel (scale, physics, focus, time, toggles)
@@ -73,40 +75,13 @@ src/
 public/          static assets served at root (e.g. earth_daymap.jpg)
 ```
 
-### How demos work (`src/scene/world.ts`)
+### `world.ts` layout
 
-`world.ts` is the large, central file. A `DemoMode` string selects special
-behavior in the per-frame `update()` loop. Each mode has a `startX()` method
-(sets camera + state) and a branch in the update loop / `updateAstro()`. Only
-`normal` is reachable from the UI now — the teaching modes (`inertia`,
-`accretion`, `helix`, `orbit-intro`, `rocket`, `soi`, `flyby`, `spacetime`,
-`precession`) are legacy and un-driven. Camera moves via an eased `flyTo`.
-
-### Mission endpooints: spaceports, not body centres
-
-Missions launch from and arrive at a **spaceport in synchronous orbit** (for
-bodies where one exists — fast prograde rotators: Earth 42,164 km, Mars 20,428 km,
-Jupiter ~160,000 km) and fall back to a low **parking orbit** otherwise (Venus
-spins retrograde in 243 days; tidally-locked moons have their synchronous radius
-outside the Hill sphere). The Δv ledger is therefore: escape burn (port orbit →
-hyperbolic departure) + TCMs + capture burn (hyperbolic arrival → port orbit).
-Surface-to-port traffic is a **different vehicle** (aerodynamics, thermal, high
-thrust) and is deliberately not modelled — `Spaceport.surfaceAccessKms` gives the
-ideal-impulse reference only.
-
-The n-body truth integrates *with* the departure/arrival bodies in the force
-model (per-source softening = the body's radius): the escape and capture
-hyperbolas are real orbits about them.
-
-The onboard force model is **Sun + departure/target bodies + SRP** (the SRP
-coefficient carries a deliberate ~10% a priori error, so a real residual
-remains). It drives the estimator's propagation, the predicted arc, and the
-terminal targeting — a differential corrector that aims at the port with the
-target's gravity in the loop (`Mission.aimAtPort`, numerically Jacobian'd,
-Newton with a step cap and a two-body Lambert fallback). Navigation quality is
-therefore set by the *tracking tier*, not by a model floor: with high-tier
-tracking a terminal TCM lands within ~300 km of the port, ~10^4 km on the
-lowest tier.
+`world.ts` is the central file: `buildBodies`/`buildMoons` create the render
+objects (mesh, orbit line, label) and `update()` advances the clock, positions
+everything, eases the camera, and drives the mission visuals via
+`updateMission()`. Camera moves go through an eased `flyTo`; `followBody` keeps
+a moving subject framed while preserving the user's own orbit/zoom pose.
 
 ## Conventions
 

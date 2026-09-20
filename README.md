@@ -111,7 +111,7 @@ src/
   scene/
     scale.ts       real vs visual scale models
     textures.ts    procedural canvas surface textures (offline, no images)
-    world.ts       Three.js scene, bodies, orbits, vectors, accretion, 2D↔3D
+    world.ts       Three.js scene, bodies, moons, orbits, camera, 2D↔3D
   ui/
     panel.ts       control + info panels
     tour.ts        the guided walkthrough (steps + deep links)

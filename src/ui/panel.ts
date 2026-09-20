@@ -41,7 +41,6 @@ export function buildUI(world: World): () => void {
       <div class="group">
         <label class="chk"><input type="checkbox" id="cOrbits" checked> 轨道路径</label>
         <label class="chk"><input type="checkbox" id="cMoons"> 卫星 <span class="tag">计算量大</span></label>
-        <label class="chk"><input type="checkbox" id="cProj"> 黄道投影线</label>
         <label class="chk"><input type="checkbox" id="cLabels" checked> 标签</label>
       </div>
 
@@ -108,9 +107,6 @@ export function buildUI(world: World): () => void {
   // ---- checkboxes ----
   (app.querySelector('#cOrbits') as HTMLInputElement).addEventListener('change', (e) => {
     world.state.showOrbits = (e.target as HTMLInputElement).checked;
-  });
-  (app.querySelector('#cProj') as HTMLInputElement).addEventListener('change', (e) => {
-    world.state.showProjection = (e.target as HTMLInputElement).checked;
   });
   (app.querySelector('#cLabels') as HTMLInputElement).addEventListener('change', (e) => {
     world.state.showLabels = (e.target as HTMLInputElement).checked;
@@ -184,7 +180,6 @@ export function buildUI(world: World): () => void {
       ? '真实比例 —— 准确的大小和距离。行星非常微小；请放大查看。'
       : '视觉比例 —— 压缩大小和距离，使所有天体清晰可见。';
     (app.querySelector('#cOrbits') as HTMLInputElement).checked = st.showOrbits;
-    (app.querySelector('#cProj') as HTMLInputElement).checked = st.showProjection;
     (app.querySelector('#cLabels') as HTMLInputElement).checked = st.showLabels;
     (app.querySelector('#cMoons') as HTMLInputElement).checked = st.showMoons;
     // Invert the log speed mapping to position the slider.
